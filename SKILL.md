@@ -1,6 +1,6 @@
 ---
 name: chat-history
-description: Search, inspect, and export Claude Code and Cursor conversation history. Use when the user asks about past conversations, wants to find a previous session, needs to search chat history, wants a summary of what they worked on, or asks to resume a session. Also use when the user says "what did I work on", "find that conversation where I...", "show me my recent sessions", or "search my history for...".
+description: Search, inspect, and export Claude Code, Cursor, and Codex conversation history. Use when the user asks about past conversations, wants to find a previous session, needs to search chat history, wants a summary of what they worked on, or asks to resume a session. Also use when the user says "what did I work on", "find that conversation where I...", "show me my recent sessions", or "search my history for...".
 ---
 
 # chat-history
@@ -32,6 +32,7 @@ chat-history --from yesterday -s           # grouped by day
 chat-history --from "3 days ago"           # natural language dates
 chat-history --source claude               # Claude Code only
 chat-history --source cursor               # Cursor only
+chat-history --source codex                # Codex only
 chat-history -L                            # current workspace only
 chat-history --branch feature-xyz          # filter by branch
 chat-history -k "auth" -v                  # keyword filter, show IDs
@@ -50,7 +51,7 @@ chat-history inspect <partial-uuid>
 chat-history view --last --plain           # pipe-friendly plain text
 chat-history view <id> --tools             # show tool call names
 chat-history export <id> -o session.md     # export as markdown
-chat-history resume <id>                   # resume Claude Code session
+chat-history resume <id>                   # resume Claude Code or Codex session
 chat-history find <id>                     # print file path for scripting
 ```
 

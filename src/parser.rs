@@ -68,7 +68,8 @@ pub fn extract_text(content: &Value) -> String {
             for block in arr {
                 let btype = block.get("type").and_then(Value::as_str).unwrap_or("");
                 match btype {
-                    "text" => {
+                    // "input_text"/"output_text" are Codex content block types
+                    "text" | "input_text" | "output_text" => {
                         if let Some(t) = block.get("text").and_then(Value::as_str) {
                             parts.push(t.to_string());
                         }

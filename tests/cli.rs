@@ -8,6 +8,7 @@ fn isolated_cmd() -> (Command, TempDir) {
     let mut cmd = Command::cargo_bin("chat-history").unwrap();
     cmd.env("CLAUDE_CONFIG_DIR", tmp.path());
     cmd.env("HOME", tmp.path());
+    cmd.env_remove("CODEX_HOME");
     (cmd, tmp)
 }
 
@@ -88,6 +89,7 @@ fn install_skill_creates_files() {
         .unwrap()
         .arg("install-skill")
         .env("HOME", tmp.path())
+        .env_remove("CODEX_HOME")
         .assert()
         .success()
         .stdout(predicate::str::contains("installed"));
@@ -99,6 +101,11 @@ fn install_skill_creates_files() {
     assert!(
         tmp.path()
             .join(".cursor/skills/chat-history/SKILL.md")
+            .exists()
+    );
+    assert!(
+        tmp.path()
+            .join(".codex/skills/chat-history/SKILL.md")
             .exists()
     );
 }
@@ -850,6 +857,155 @@ fn setup_cursor_fixture(tmp: &TempDir) {
         txt_content,
     )
     .unwrap();
+}
+
+fn setup_codex_fixture(tmp: &TempDir) {
+    let day_dir = tmp
+        .path()
+        .join(".codex")
+        .join("sessions")
+        .join("2026")
+        .join("06")
+        .join("10");
+    fs::create_dir_all(&day_dir).unwrap();
+
+    let session_id = "019e0000-aaaa-bbbb-cccc-000000000001";
+    let rollout = [
+        r#"{"timestamp":"2026-06-10T10:00:00.000Z","type":"session_meta","payload":{"id":"019e0000-aaaa-bbbb-cccc-000000000001","timestamp":"2026-06-10T10:00:00.000Z","cwd":"/Users/test/codexproj","originator":"codex-tui","cli_version":"0.136.0","git":{"commit_hash":"abc123","branch":"codex-branch"}}}"#,
+        r#"{"timestamp":"2026-06-10T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n<cwd>/Users/test/codexproj</cwd>\n</environment_context>"}]}}"#,
+        r#"{"timestamp":"2026-06-10T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"migrate the auth service to async handlers"}]}}"#,
+        r#"{"timestamp":"2026-06-10T10:00:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I migrated the auth service endpoints to async handlers with tokio."}]}}"#,
+    ]
+    .join("\n");
+    fs::write(
+        day_dir.join(format!("rollout-2026-06-10T10-00-00-{session_id}.jsonl")),
+        rollout,
+    )
+    .unwrap();
+
+    // Sub-agent rollout that must be skipped in listings
+    let subagent = [
+        r#"{"timestamp":"2026-06-10T11:00:00.000Z","type":"session_meta","payload":{"id":"019e0000-aaaa-bbbb-cccc-000000000002","timestamp":"2026-06-10T11:00:00.000Z","cwd":"/Users/test/codexproj","source":{"subagent":{"parent_thread_id":"019e0000-aaaa-bbbb-cccc-000000000001","depth":1}}}}"#,
+        r#"{"timestamp":"2026-06-10T11:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"subagent task prompt"}]}}"#,
+    ]
+    .join("\n");
+    fs::write(
+        day_dir.join("rollout-2026-06-10T11-00-00-019e0000-aaaa-bbbb-cccc-000000000002.jsonl"),
+        subagent,
+    )
+    .unwrap();
+}
+
+#[test]
+fn codex_sessions_listed() {
+    let tmp = TempDir::new().unwrap();
+    setup_codex_fixture(&tmp);
+    let output = Command::cargo_bin("chat-history")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env_remove("CODEX_HOME")
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success());
+    assert!(
+        stdout.contains("1 sessions"),
+        "should list exactly one codex session (subagent skipped): {stdout}"
+    );
+    assert!(
+        stdout.contains("migrate the auth service"),
+        "should show codex session's first prompt, not env context: {stdout}"
+    );
+}
+
+#[test]
+fn codex_source_filter() {
+    let tmp = TempDir::new().unwrap();
+    setup_codex_fixture(&tmp);
+    setup_cursor_fixture(&tmp);
+    let output = Command::cargo_bin("chat-history")
+        .unwrap()
+        .args(["--source", "codex"])
+        .env("HOME", tmp.path())
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env_remove("CODEX_HOME")
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success());
+    assert!(
+        stdout.contains("migrate the auth service"),
+        "codex session should be listed: {stdout}"
+    );
+    assert!(
+        !stdout.contains("refactor the database module"),
+        "cursor session should be filtered out: {stdout}"
+    );
+}
+
+#[test]
+fn codex_session_view() {
+    let tmp = TempDir::new().unwrap();
+    setup_codex_fixture(&tmp);
+    let output = Command::cargo_bin("chat-history")
+        .unwrap()
+        .args(["view", "--last", "--plain"])
+        .env("HOME", tmp.path())
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env_remove("CODEX_HOME")
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success());
+    assert!(
+        stdout.contains("async handlers with tokio"),
+        "should display codex assistant message: {stdout}"
+    );
+    assert!(
+        !stdout.contains("<environment_context>"),
+        "env context noise should not appear in transcript: {stdout}"
+    );
+}
+
+#[test]
+fn codex_session_deep_search() {
+    let tmp = TempDir::new().unwrap();
+    setup_codex_fixture(&tmp);
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .args(["search", "async handlers", "--deep"])
+        .env("HOME", tmp.path())
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env_remove("CODEX_HOME")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("async"));
+}
+
+#[test]
+fn codex_home_env_override() {
+    let tmp = TempDir::new().unwrap();
+    setup_codex_fixture(&tmp);
+    let codex_home = tmp.path().join(".codex");
+    let other_home = TempDir::new().unwrap();
+    let output = Command::cargo_bin("chat-history")
+        .unwrap()
+        .env("HOME", other_home.path())
+        .env("CLAUDE_CONFIG_DIR", other_home.path())
+        .env("CODEX_HOME", &codex_home)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success());
+    assert!(
+        stdout.contains("migrate the auth service"),
+        "CODEX_HOME should override the default ~/.codex location: {stdout}"
+    );
 }
 
 #[test]

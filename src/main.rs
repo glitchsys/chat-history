@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "chat-history",
-    about = "Search Claude Code + Cursor conversation history",
+    about = "Search Claude Code + Cursor + Codex conversation history",
     version
 )]
 struct Cli {
@@ -25,7 +25,7 @@ struct Cli {
     #[arg(long = "to", global = true, help = "End date")]
     to_date: Option<String>,
 
-    #[arg(long, global = true, help = "Filter by source (claude/cursor)")]
+    #[arg(long, global = true, help = "Filter by source (claude/cursor/codex)")]
     source: Option<String>,
 
     #[arg(long, global = true, help = "Filter by project path substring")]
@@ -91,7 +91,7 @@ enum Commands {
     Find {
         session_id: String,
     },
-    /// Install the agent skill for Claude Code and Cursor
+    /// Install the agent skill for Claude Code, Cursor, and Codex
     #[command(name = "install-skill")]
     InstallSkill,
 }
@@ -106,6 +106,7 @@ fn skill_targets() -> Vec<(std::path::PathBuf, &'static str)> {
     vec![
         (home.join(".cursor/skills/chat-history"), "Cursor"),
         (home.join(".claude/skills/chat-history"), "Claude Code"),
+        (session::codex_home().join("skills/chat-history"), "Codex"),
     ]
 }
 
@@ -289,8 +290,8 @@ fn main() {
                 eprintln!("Session not found: {session_id}");
                 std::process::exit(1);
             };
-            if session.source != "claude" {
-                eprintln!("Resume is only supported for Claude Code sessions.");
+            if session.source != "claude" && session.source != "codex" {
+                eprintln!("Resume is only supported for Claude Code and Codex sessions.");
                 std::process::exit(1);
             }
             println!(
@@ -307,7 +308,7 @@ fn main() {
                     if let Err(e) = std::env::set_current_dir(project) {
                         eprintln!("Warning: could not cd to {}: {e}", session.project);
                     }
-                } else {
+                } else if session.source == "claude" {
                     eprintln!(
                         "Project dir {} no longer exists, copying session to current directory...",
                         session.project
@@ -329,10 +330,13 @@ fn main() {
                 }
             }
             use std::os::unix::process::CommandExt;
-            let err = std::process::Command::new("claude")
-                .args(["--resume", &session.id])
-                .exec();
-            eprintln!("Failed to exec claude: {err}");
+            let (bin, args) = if session.source == "codex" {
+                ("codex", ["resume", session.id.as_str()])
+            } else {
+                ("claude", ["--resume", session.id.as_str()])
+            };
+            let err = std::process::Command::new(bin).args(args).exec();
+            eprintln!("Failed to exec {bin}: {err}");
             std::process::exit(1);
         }
         Some(Commands::Find { session_id }) => {

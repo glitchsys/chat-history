@@ -1,6 +1,6 @@
 # chat-history
 
-A fast Rust CLI to search, inspect, and export **Claude Code** and **Cursor** conversation history.
+A fast Rust CLI to search, inspect, and export **Claude Code**, **Cursor**, and **OpenAI Codex CLI** conversation history.
 
 Scoring logic ported from [claude-historian-mcp](https://github.com/Vvkmnn/claude-historian-mcp), [claude-history](https://github.com/raine/claude-history), and [search-sessions](https://github.com/sinzin91/search-sessions), with Cursor transcript parsing inspired by [cursor-history](https://github.com/S2thend/cursor-history).
 
@@ -20,7 +20,7 @@ This installs both `chat-history` and `ch` (short alias) into `~/.cargo/bin/`.
 chat-history install-skill
 ```
 
-This writes the bundled `SKILL.md` to `~/.cursor/skills/chat-history/` and `~/.claude/skills/chat-history/`, giving Claude Code and Cursor agents the ability to search your conversation history automatically. Re-run after upgrading to pick up skill updates.
+This writes the bundled `SKILL.md` to `~/.cursor/skills/chat-history/`, `~/.claude/skills/chat-history/`, and `~/.codex/skills/chat-history/`, giving Claude Code, Cursor, and Codex agents the ability to search your conversation history automatically. Re-run after upgrading to pick up skill updates.
 
 ### Build from source
 
@@ -57,6 +57,7 @@ chat-history                               # all sessions
 chat-history -L                            # current workspace only
 chat-history --source claude               # Claude Code sessions only
 chat-history --source cursor               # Cursor sessions only
+chat-history --source codex                # Codex sessions only
 chat-history --from 2026-03-01 --to 2026-03-20
 chat-history --from yesterday              # natural language dates
 chat-history --from "3 days ago"           # relative dates
@@ -113,14 +114,14 @@ chat-history view --last --plain           # plain text (pipe-friendly)
 
 ```bash
 chat-history export 2df5 -o session.md     # export as markdown
-chat-history resume 2df5                   # resume Claude Code session
+chat-history resume 2df5                   # resume Claude Code or Codex session
 chat-history find e912                     # print file path (for scripting)
 ```
 
 ### Install agent skill
 
 ```bash
-chat-history install-skill                 # installs SKILL.md for Claude Code + Cursor
+chat-history install-skill                 # installs SKILL.md for Claude Code + Cursor + Codex
 ```
 
 ## Data sources
@@ -130,6 +131,7 @@ chat-history install-skill                 # installs SKILL.md for Claude Code +
 | Claude Code index | `~/.claude/projects/*/sessions-index.json` | Summary, dates, branch, message count |
 | Claude Code JSONL | `~/.claude/projects/*/*.jsonl` | Full conversations with tool calls |
 | Cursor agent transcripts | `~/.cursor/projects/*/agent-transcripts/` | JSONL or plain-text transcripts |
+| Codex CLI rollouts | `~/.codex/sessions/*/rollout-*.jsonl` | Full conversations with tool calls (honors `$CODEX_HOME`) |
 
 ## Search scoring
 

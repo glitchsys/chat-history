@@ -23,6 +23,7 @@ macro_rules! c {
                 "blue" => "\x1b[34m",
                 "red" => "\x1b[31m",
                 "bg_blue" => "\x1b[44m",
+                "bg_magenta" => "\x1b[45m",
                 "bg_cyan" => "\x1b[46m",
                 _ => "",
             }
@@ -33,10 +34,10 @@ macro_rules! c {
 }
 
 fn src_tag(source: &str) -> String {
-    if source == "claude" {
-        format!("{}{} CC {}", c!("bg_cyan"), c!("bold"), c!("reset"))
-    } else {
-        format!("{}{} CR {}", c!("bg_blue"), c!("bold"), c!("reset"))
+    match source {
+        "claude" => format!("{}{} CC {}", c!("bg_cyan"), c!("bold"), c!("reset")),
+        "codex" => format!("{}{} CX {}", c!("bg_magenta"), c!("bold"), c!("reset")),
+        _ => format!("{}{} CR {}", c!("bg_blue"), c!("bold"), c!("reset")),
     }
 }
 

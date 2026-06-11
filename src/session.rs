@@ -105,6 +105,17 @@ fn cursor_projects_dir() -> PathBuf {
     home_dir().join(".cursor").join("projects")
 }
 
+pub fn codex_home() -> PathBuf {
+    if let Some(dir) = std::env::var_os("CODEX_HOME") {
+        return PathBuf::from(dir);
+    }
+    home_dir().join(".codex")
+}
+
+fn codex_sessions_dir() -> PathBuf {
+    codex_home().join("sessions")
+}
+
 fn read_cwd_from_jsonl(path: &Path) -> Option<String> {
     let file = fs::File::open(path).ok()?;
     let reader = BufReader::new(file);
@@ -470,9 +481,144 @@ pub fn load_cursor_sessions() -> Vec<Session> {
     sessions
 }
 
+struct CodexMeta {
+    id: String,
+    created: String,
+    cwd: String,
+    branch: String,
+    is_subagent: bool,
+}
+
+// Codex rollout lines are {"timestamp", "type", "payload": {...}}; older CLI
+// versions wrote the payload fields at the top level without a wrapper.
+fn codex_payload(entry: &Value) -> &Value {
+    entry.get("payload").unwrap_or(entry)
+}
+
+fn read_codex_meta(path: &Path) -> Option<CodexMeta> {
+    let file = fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    let line = reader.lines().next()?.ok()?;
+    let entry: Value = serde_json::from_str(line.trim()).ok()?;
+    let payload = codex_payload(&entry);
+    let id = payload.get("id").and_then(Value::as_str)?.to_string();
+    let created = payload
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let cwd = payload
+        .get("cwd")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let branch = payload
+        .get("git")
+        .and_then(|g| g.get("branch"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let is_subagent = payload
+        .get("source")
+        .and_then(|s| s.get("subagent"))
+        .is_some();
+    Some(CodexMeta {
+        id,
+        created,
+        cwd,
+        branch,
+        is_subagent,
+    })
+}
+
+// Codex injects environment/permission wrappers as user-role messages.
+fn is_codex_noise(text: &str) -> bool {
+    let t = text.trim_start();
+    t.starts_with("<environment_context>")
+        || t.starts_with("<permissions")
+        || t.starts_with("<user_instructions>")
+}
+
+fn codex_first_prompt(path: &Path) -> String {
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return String::new(),
+    };
+    let reader = BufReader::new(file);
+    for line in reader.lines().take(100) {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let entry: Value = match serde_json::from_str(line.trim()) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let payload = codex_payload(&entry);
+        if payload.get("type").and_then(Value::as_str) != Some("message")
+            || payload.get("role").and_then(Value::as_str) != Some("user")
+        {
+            continue;
+        }
+        let content = payload
+            .get("content")
+            .cloned()
+            .unwrap_or(Value::String(String::new()));
+        let text = extract_text(&content);
+        let trimmed = text.trim();
+        if !trimmed.is_empty() && !is_codex_noise(trimmed) {
+            return trimmed.chars().take(300).collect();
+        }
+    }
+    String::new()
+}
+
+pub fn load_codex_sessions() -> Vec<Session> {
+    let base = codex_sessions_dir();
+    if !base.exists() {
+        return Vec::new();
+    }
+    let mut sessions = Vec::new();
+    for path in glob::glob(&format!("{}/**/rollout-*.jsonl", base.display()))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let Some(meta) = read_codex_meta(&path) else {
+            continue;
+        };
+        if meta.is_subagent {
+            continue;
+        }
+        let modified = mtime_iso(&path).unwrap_or_default();
+        let date = meta
+            .created
+            .get(..10)
+            .map(str::to_string)
+            .unwrap_or_else(|| mtime_date(&path).unwrap_or_default());
+        let first = codex_first_prompt(&path);
+        sessions.push(Session {
+            source: "codex".into(),
+            id: meta.id,
+            summary: String::new(),
+            first_prompt: first,
+            created: meta.created,
+            modified,
+            date,
+            messages: 0,
+            branch: meta.branch,
+            project: meta.cwd,
+            file: path.to_string_lossy().to_string(),
+            is_sidechain: false,
+        });
+    }
+    sessions
+}
+
 pub fn load_all_sessions() -> Vec<Session> {
     let mut all = load_claude_sessions();
     all.extend(load_cursor_sessions());
+    all.extend(load_codex_sessions());
     all
 }
 
@@ -657,6 +803,100 @@ pub fn parse_claude_jsonl(
     (messages, None)
 }
 
+pub fn parse_codex_jsonl(filepath: &str) -> Vec<Message> {
+    let file = match fs::File::open(filepath) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let reader = BufReader::new(file);
+    let mut messages: Vec<Message> = Vec::new();
+    let mut session_id = String::new();
+    let mut project_path = String::new();
+    let mut total_chars: usize = 0;
+    let max_chars: usize = 4 * 1024 * 1024;
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let entry: Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if entry.get("type").and_then(Value::as_str) == Some("session_meta") {
+            if let Some(p) = entry.get("payload") {
+                session_id = p
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                project_path = p
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+            }
+            continue;
+        }
+        let timestamp = entry
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let payload = codex_payload(&entry);
+        match payload.get("type").and_then(Value::as_str) {
+            Some("message") => {
+                let role = payload.get("role").and_then(Value::as_str).unwrap_or("");
+                if role != "user" && role != "assistant" {
+                    continue;
+                }
+                let content_raw = payload
+                    .get("content")
+                    .cloned()
+                    .unwrap_or(Value::String(String::new()));
+                let text = extract_text(&content_raw);
+                if text.trim().is_empty() || (role == "user" && is_codex_noise(&text)) {
+                    continue;
+                }
+                let ctx = crate::parser::extract_context(&content_raw);
+                if total_chars < max_chars {
+                    total_chars += text.len();
+                    messages.push(Message {
+                        uuid: String::new(),
+                        timestamp,
+                        role: role.to_string(),
+                        content: text,
+                        session_id: session_id.clone(),
+                        project_path: project_path.clone(),
+                        tool_uses: ctx.tools,
+                        files_referenced: ctx.files,
+                        error_patterns: ctx.errors,
+                        relevance_score: 0.0,
+                        final_score: 0.0,
+                    });
+                }
+            }
+            // Tool calls are separate records in Codex rollouts; attach the
+            // tool name to the assistant message that initiated it.
+            Some("function_call") => {
+                if let Some(name) = payload.get("name").and_then(Value::as_str)
+                    && let Some(last) = messages.last_mut()
+                    && last.role == "assistant"
+                {
+                    last.tool_uses.push(name.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    messages
+}
+
 pub fn parse_cursor_jsonl(filepath: &str) -> Vec<Message> {
     let file = match fs::File::open(filepath) {
         Ok(f) => f,
@@ -791,6 +1031,21 @@ pub fn parse_cursor_txt(filepath: &str) -> Vec<Message> {
 pub fn parse_session(session: &Session, extract_meta: bool) -> (Vec<Message>, Option<SessionMeta>) {
     if session.source == "claude" {
         return parse_claude_jsonl(&session.file, extract_meta);
+    }
+    if session.source == "codex" {
+        let messages = parse_codex_jsonl(&session.file);
+        if extract_meta {
+            return (
+                messages,
+                Some(SessionMeta {
+                    summary: None,
+                    custom_title: None,
+                    model: None,
+                    total_tokens: 0,
+                }),
+            );
+        }
+        return (messages, None);
     }
     let messages = if session.file.ends_with(".jsonl") {
         parse_cursor_jsonl(&session.file)
@@ -1209,6 +1464,92 @@ mod tests {
         assert_eq!(messages[1].role, "assistant");
         assert_eq!(messages[2].role, "user");
         assert_eq!(messages[3].role, "assistant");
+    }
+
+    const CODEX_FIXTURE: &str = r#"{"timestamp":"2026-06-10T10:00:00.000Z","type":"session_meta","payload":{"id":"019e0000-aaaa-bbbb-cccc-000000000001","timestamp":"2026-06-10T10:00:00.000Z","cwd":"/Users/test/myproj","originator":"codex-tui","cli_version":"0.136.0","git":{"commit_hash":"abc123","branch":"feature-codex"}}}
+{"timestamp":"2026-06-10T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>\nsandbox stuff"}]}}
+{"timestamp":"2026-06-10T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n<cwd>/Users/test/myproj</cwd>\n</environment_context>"}]}}
+{"timestamp":"2026-06-10T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"add connection pooling to the database layer"}]}}
+{"timestamp":"2026-06-10T10:00:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I'll add connection pooling using a bounded pool."}],"phase":"commentary"}}
+{"timestamp":"2026-06-10T10:00:06.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"ls\"]}","call_id":"call_1"}}
+{"timestamp":"2026-06-10T10:00:07.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"src tests"}}
+{"timestamp":"2026-06-10T10:00:09.000Z","type":"event_msg","payload":{"type":"token_count","info":{}}}"#;
+
+    #[test]
+    fn parse_codex_jsonl_with_fixture() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), CODEX_FIXTURE).unwrap();
+        let messages = parse_codex_jsonl(tmp.path().to_str().unwrap());
+        assert_eq!(
+            messages.len(),
+            2,
+            "developer and environment_context messages should be filtered"
+        );
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(
+            messages[0].content,
+            "add connection pooling to the database layer"
+        );
+        assert_eq!(
+            messages[0].session_id,
+            "019e0000-aaaa-bbbb-cccc-000000000001"
+        );
+        assert_eq!(messages[0].project_path, "/Users/test/myproj");
+        assert_eq!(messages[0].timestamp, "2026-06-10T10:00:02.000Z");
+        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(
+            messages[1].tool_uses,
+            vec!["shell".to_string()],
+            "function_call tool name should attach to preceding assistant message"
+        );
+    }
+
+    #[test]
+    fn parse_codex_jsonl_legacy_flat_records() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let data = r#"{"id":"legacy-id","timestamp":"2025-08-01T10:00:00.000Z","instructions":null}
+{"type":"message","role":"user","content":[{"type":"input_text","text":"legacy format question"}]}
+{"type":"message","role":"assistant","content":[{"type":"output_text","text":"legacy format answer"}]}"#;
+        std::fs::write(tmp.path(), data).unwrap();
+        let messages = parse_codex_jsonl(tmp.path().to_str().unwrap());
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content, "legacy format question");
+        assert_eq!(messages[1].content, "legacy format answer");
+    }
+
+    #[test]
+    fn parse_codex_jsonl_nonexistent_file() {
+        assert!(parse_codex_jsonl("/nonexistent/rollout.jsonl").is_empty());
+    }
+
+    #[test]
+    fn codex_first_prompt_skips_noise() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), CODEX_FIXTURE).unwrap();
+        assert_eq!(
+            codex_first_prompt(tmp.path()),
+            "add connection pooling to the database layer"
+        );
+    }
+
+    #[test]
+    fn read_codex_meta_basic() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), CODEX_FIXTURE).unwrap();
+        let meta = read_codex_meta(tmp.path()).unwrap();
+        assert_eq!(meta.id, "019e0000-aaaa-bbbb-cccc-000000000001");
+        assert_eq!(meta.created, "2026-06-10T10:00:00.000Z");
+        assert_eq!(meta.cwd, "/Users/test/myproj");
+        assert_eq!(meta.branch, "feature-codex");
+        assert!(!meta.is_subagent);
+    }
+
+    #[test]
+    fn read_codex_meta_detects_subagent() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let data = r#"{"timestamp":"2026-06-10T10:00:00.000Z","type":"session_meta","payload":{"id":"sub-1","timestamp":"2026-06-10T10:00:00.000Z","cwd":"/p","source":{"subagent":{"parent_thread_id":"parent-1","depth":1}}}}"#;
+        std::fs::write(tmp.path(), data).unwrap();
+        assert!(read_codex_meta(tmp.path()).unwrap().is_subagent);
     }
 
     #[test]

@@ -290,8 +290,8 @@ fn main() {
                 eprintln!("Session not found: {session_id}");
                 std::process::exit(1);
             };
-            if session.source != "claude" {
-                eprintln!("Resume is only supported for Claude Code sessions.");
+            if session.source != "claude" && session.source != "codex" {
+                eprintln!("Resume is only supported for Claude Code and Codex sessions.");
                 std::process::exit(1);
             }
             println!(
@@ -308,7 +308,7 @@ fn main() {
                     if let Err(e) = std::env::set_current_dir(project) {
                         eprintln!("Warning: could not cd to {}: {e}", session.project);
                     }
-                } else {
+                } else if session.source == "claude" {
                     eprintln!(
                         "Project dir {} no longer exists, copying session to current directory...",
                         session.project
@@ -330,10 +330,13 @@ fn main() {
                 }
             }
             use std::os::unix::process::CommandExt;
-            let err = std::process::Command::new("claude")
-                .args(["--resume", &session.id])
-                .exec();
-            eprintln!("Failed to exec claude: {err}");
+            let (bin, args) = if session.source == "codex" {
+                ("codex", ["resume", session.id.as_str()])
+            } else {
+                ("claude", ["--resume", session.id.as_str()])
+            };
+            let err = std::process::Command::new(bin).args(args).exec();
+            eprintln!("Failed to exec {bin}: {err}");
             std::process::exit(1);
         }
         Some(Commands::Find { session_id }) => {

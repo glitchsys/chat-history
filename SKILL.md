@@ -51,7 +51,7 @@ chat-history inspect <partial-uuid>
 chat-history view --last --plain           # pipe-friendly plain text
 chat-history view <id> --tools             # show tool call names
 chat-history export <id> -o session.md     # export as markdown
-chat-history resume <id>                   # resume Claude Code session
+chat-history resume <id>                   # resume Claude Code or Codex session
 chat-history find <id>                     # print file path for scripting
 ```
 

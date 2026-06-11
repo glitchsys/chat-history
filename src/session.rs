@@ -531,12 +531,20 @@ fn read_codex_meta(path: &Path) -> Option<CodexMeta> {
     })
 }
 
-// Codex injects environment/permission wrappers as user-role messages.
+// Codex injects system wrappers (environment, permissions, goal context,
+// aborted-turn markers, subagent notifications) as user-role messages.
 fn is_codex_noise(text: &str) -> bool {
     let t = text.trim_start();
-    t.starts_with("<environment_context>")
-        || t.starts_with("<permissions")
-        || t.starts_with("<user_instructions>")
+    [
+        "<environment_context>",
+        "<permissions",
+        "<user_instructions>",
+        "<turn_aborted",
+        "<goal_context",
+        "<subagent_notification",
+    ]
+    .iter()
+    .any(|tag| t.starts_with(tag))
 }
 
 fn codex_first_prompt(path: &Path) -> String {
@@ -555,18 +563,25 @@ fn codex_first_prompt(path: &Path) -> String {
             Err(_) => continue,
         };
         let payload = codex_payload(&entry);
-        if payload.get("type").and_then(Value::as_str) != Some("message")
-            || payload.get("role").and_then(Value::as_str) != Some("user")
-        {
-            continue;
-        }
-        let content = payload
-            .get("content")
-            .cloned()
-            .unwrap_or(Value::String(String::new()));
-        let text = extract_text(&content);
+        let text = match payload.get("type").and_then(Value::as_str) {
+            Some("message") if payload.get("role").and_then(Value::as_str) == Some("user") => {
+                let content = payload
+                    .get("content")
+                    .cloned()
+                    .unwrap_or(Value::String(String::new()));
+                extract_text(&content)
+            }
+            // event_msg user_message records carry the literal text the user
+            // typed, without Codex's XML wrappers (e.g. <user_action>).
+            Some("user_message") => payload
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            _ => continue,
+        };
         let trimmed = text.trim();
-        if !trimmed.is_empty() && !is_codex_noise(trimmed) {
+        if !trimmed.is_empty() && !is_codex_noise(trimmed) && !trimmed.starts_with("<user_action") {
             return trimmed.chars().take(300).collect();
         }
     }
@@ -812,6 +827,9 @@ pub fn parse_codex_jsonl(filepath: &str) -> Vec<Message> {
     let mut messages: Vec<Message> = Vec::new();
     let mut session_id = String::new();
     let mut project_path = String::new();
+    // Tool calls made before the assistant says anything; attached to the
+    // next assistant message so they aren't lost.
+    let mut pending_tools: Vec<String> = Vec::new();
     let mut total_chars: usize = 0;
     let max_chars: usize = 4 * 1024 * 1024;
 
@@ -828,19 +846,20 @@ pub fn parse_codex_jsonl(filepath: &str) -> Vec<Message> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if entry.get("type").and_then(Value::as_str) == Some("session_meta") {
-            if let Some(p) = entry.get("payload") {
-                session_id = p
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                project_path = p
-                    .get("cwd")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-            }
+        // session_meta carries id/cwd; legacy files put them flat on line 1.
+        let etype = entry.get("type").and_then(Value::as_str);
+        if etype == Some("session_meta") || (etype.is_none() && entry.get("id").is_some()) {
+            let p = codex_payload(&entry);
+            session_id = p
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            project_path = p
+                .get("cwd")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             continue;
         }
         let timestamp = entry
@@ -866,6 +885,10 @@ pub fn parse_codex_jsonl(filepath: &str) -> Vec<Message> {
                 let ctx = crate::parser::extract_context(&content_raw);
                 if total_chars < max_chars {
                     total_chars += text.len();
+                    let mut tool_uses = ctx.tools;
+                    if role == "assistant" {
+                        tool_uses.append(&mut pending_tools);
+                    }
                     messages.push(Message {
                         uuid: String::new(),
                         timestamp,
@@ -873,7 +896,7 @@ pub fn parse_codex_jsonl(filepath: &str) -> Vec<Message> {
                         content: text,
                         session_id: session_id.clone(),
                         project_path: project_path.clone(),
-                        tool_uses: ctx.tools,
+                        tool_uses,
                         files_referenced: ctx.files,
                         error_patterns: ctx.errors,
                         relevance_score: 0.0,
@@ -882,13 +905,16 @@ pub fn parse_codex_jsonl(filepath: &str) -> Vec<Message> {
                 }
             }
             // Tool calls are separate records in Codex rollouts; attach the
-            // tool name to the assistant message that initiated it.
+            // tool name to the assistant message that initiated it, or hold
+            // it for the next assistant message if none exists yet.
             Some("function_call") => {
-                if let Some(name) = payload.get("name").and_then(Value::as_str)
-                    && let Some(last) = messages.last_mut()
-                    && last.role == "assistant"
-                {
-                    last.tool_uses.push(name.to_string());
+                if let Some(name) = payload.get("name").and_then(Value::as_str) {
+                    match messages.last_mut() {
+                        Some(last) if last.role == "assistant" => {
+                            last.tool_uses.push(name.to_string());
+                        }
+                        _ => pending_tools.push(name.to_string()),
+                    }
                 }
             }
             _ => {}
@@ -1515,6 +1541,44 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content, "legacy format question");
         assert_eq!(messages[1].content, "legacy format answer");
+        assert_eq!(
+            messages[0].session_id, "legacy-id",
+            "session id should be read from the legacy flat meta line"
+        );
+    }
+
+    #[test]
+    fn parse_codex_jsonl_attaches_leading_tool_calls_to_next_assistant() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let data = r#"{"timestamp":"2026-06-10T10:00:00.000Z","type":"session_meta","payload":{"id":"s1","timestamp":"2026-06-10T10:00:00.000Z","cwd":"/p"}}
+{"timestamp":"2026-06-10T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"run the tests"}]}}
+{"timestamp":"2026-06-10T10:00:02.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{}","call_id":"c1"}}
+{"timestamp":"2026-06-10T10:00:03.000Z","type":"response_item","payload":{"type":"function_call","name":"read_file","arguments":"{}","call_id":"c2"}}
+{"timestamp":"2026-06-10T10:00:04.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"All tests pass."}]}}"#;
+        std::fs::write(tmp.path(), data).unwrap();
+        let messages = parse_codex_jsonl(tmp.path().to_str().unwrap());
+        assert_eq!(messages.len(), 2);
+        assert_eq!(
+            messages[1].tool_uses,
+            vec!["shell".to_string(), "read_file".to_string()],
+            "tool calls made before any assistant text should attach to the next assistant message"
+        );
+    }
+
+    #[test]
+    fn is_codex_noise_covers_injected_wrappers() {
+        for noise in [
+            "<environment_context>\n<cwd>/p</cwd>",
+            "<permissions instructions>\nsandbox",
+            "<user_instructions>do x</user_instructions>",
+            "<turn_aborted>user interrupted</turn_aborted>",
+            "<goal_context>...</goal_context>",
+            "<subagent_notification>done</subagent_notification>",
+        ] {
+            assert!(is_codex_noise(noise), "should filter: {noise}");
+        }
+        assert!(!is_codex_noise("fix the <div> rendering bug"));
+        assert!(!is_codex_noise("plain user prompt"));
     }
 
     #[test]
@@ -1529,6 +1593,19 @@ mod tests {
         assert_eq!(
             codex_first_prompt(tmp.path()),
             "add connection pooling to the database layer"
+        );
+    }
+
+    #[test]
+    fn codex_first_prompt_prefers_typed_user_message_over_user_action_wrapper() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let data = r#"{"timestamp":"2026-06-10T10:00:00.000Z","type":"session_meta","payload":{"id":"s1","timestamp":"2026-06-10T10:00:00.000Z","cwd":"/p"}}
+{"timestamp":"2026-06-10T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<user_action>\n<context>User initiated a review task.</context>\n</user_action>"}]}}
+{"timestamp":"2026-06-10T10:00:02.000Z","type":"event_msg","payload":{"type":"user_message","message":"https://github.com/org/repo/pull/31","images":null}}"#;
+        std::fs::write(tmp.path(), data).unwrap();
+        assert_eq!(
+            codex_first_prompt(tmp.path()),
+            "https://github.com/org/repo/pull/31"
         );
     }
 

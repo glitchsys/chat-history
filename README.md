@@ -114,7 +114,7 @@ chat-history view --last --plain           # plain text (pipe-friendly)
 
 ```bash
 chat-history export 2df5 -o session.md     # export as markdown
-chat-history resume 2df5                   # resume Claude Code session
+chat-history resume 2df5                   # resume Claude Code or Codex session
 chat-history find e912                     # print file path (for scripting)
 ```
 

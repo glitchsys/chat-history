@@ -47,6 +47,7 @@ impl Message {
     }
 }
 
+#[derive(Default)]
 pub struct SessionMeta {
     pub summary: Option<String>,
     pub custom_title: Option<String>,
@@ -116,9 +117,14 @@ fn codex_sessions_dir() -> PathBuf {
     codex_home().join("sessions")
 }
 
-fn read_cwd_from_jsonl(path: &Path) -> Option<String> {
-    let file = fs::File::open(path).ok()?;
+// Reads cwd and gitBranch from the first records of a Claude transcript.
+fn read_cwd_branch_from_jsonl(path: &Path) -> (Option<String>, Option<String>) {
+    let Ok(file) = fs::File::open(path) else {
+        return (None, None);
+    };
     let reader = BufReader::new(file);
+    let mut cwd = None;
+    let mut branch = None;
     for line in reader.lines().take(10) {
         let line = match line {
             Ok(l) => l,
@@ -132,13 +138,77 @@ fn read_cwd_from_jsonl(path: &Path) -> Option<String> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if let Some(cwd) = entry.get("cwd").and_then(Value::as_str)
-            && !cwd.is_empty()
+        if cwd.is_none()
+            && let Some(c) = entry.get("cwd").and_then(Value::as_str)
+            && !c.is_empty()
         {
-            return Some(cwd.to_string());
+            cwd = Some(c.to_string());
+        }
+        if branch.is_none()
+            && let Some(b) = entry.get("gitBranch").and_then(Value::as_str)
+            && !b.is_empty()
+        {
+            branch = Some(b.to_string());
+        }
+        if cwd.is_some() && branch.is_some() {
+            break;
         }
     }
-    None
+    (cwd, branch)
+}
+
+// Current Claude Code appends ai-title records as the session title evolves;
+// the last one is the current title. Read from the tail to avoid scanning
+// whole transcripts during listing.
+fn claude_ai_title(path: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    const TAIL: u64 = 64 * 1024;
+    let start = len.saturating_sub(TAIL);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    // The seek may land mid-character; decode lossily and skip the partial line.
+    let buf = String::from_utf8_lossy(&bytes);
+    let mut ai_title = None;
+    let mut custom_title_cleared = false;
+    for line in buf.lines().rev() {
+        if !line.contains("\"ai-title\"") && !line.contains("\"custom-title\"") {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        match entry.get("type").and_then(Value::as_str) {
+            Some("custom-title") => {
+                if custom_title_cleared {
+                    continue;
+                }
+                let title = entry
+                    .get("customTitle")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
+                if !title.is_empty() {
+                    return Some(title.to_string());
+                }
+                custom_title_cleared = true;
+            }
+            Some("ai-title") if ai_title.is_none() => {
+                let title = entry
+                    .get("aiTitle")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
+                if !title.is_empty() {
+                    ai_title = Some(title.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    ai_title
 }
 
 pub fn encode_path_for_claude(path: &Path) -> String {
@@ -364,23 +434,25 @@ pub fn load_claude_sessions() -> Vec<Session> {
                     }
                     let iso = mtime_iso(&path).unwrap_or_default();
                     let date = mtime_date(&path).unwrap_or_default();
-                    let project = read_cwd_from_jsonl(&path).unwrap_or_else(|| {
+                    let (cwd, branch) = read_cwd_branch_from_jsonl(&path);
+                    let project = cwd.unwrap_or_else(|| {
                         dir.file_name()
                             .unwrap_or_default()
                             .to_string_lossy()
                             .replace('-', "/")
                     });
+                    let summary = claude_ai_title(&path).unwrap_or_default();
                     let first = claude_first_prompt(&path);
                     sessions.push(Session {
                         source: "claude".into(),
                         id: sid,
-                        summary: String::new(),
+                        summary,
                         first_prompt: first,
                         created: iso.clone(),
                         modified: iso,
                         date,
                         messages: 0,
-                        branch: String::new(),
+                        branch: branch.unwrap_or_default(),
                         project,
                         file: path.to_string_lossy().to_string(),
                         is_sidechain: false,
@@ -451,6 +523,37 @@ pub fn load_cursor_sessions() -> Vec<Session> {
                 }
             }
             for (dirname, path) in dir_entries {
+                let subagents = path.join("subagents");
+                if let Ok(entries) = fs::read_dir(&subagents) {
+                    for entry in entries.flatten() {
+                        let subagent_path = entry.path();
+                        if subagent_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                            continue;
+                        }
+                        let sid = subagent_path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        let iso = mtime_iso(&subagent_path).unwrap_or_default();
+                        let date = mtime_date(&subagent_path).unwrap_or_default();
+                        let first = cursor_first_prompt_jsonl(&subagent_path);
+                        sessions.push(Session {
+                            source: "cursor".into(),
+                            id: sid,
+                            summary: String::new(),
+                            first_prompt: first,
+                            created: iso.clone(),
+                            modified: iso,
+                            date,
+                            messages: 0,
+                            branch: String::new(),
+                            project: pd.file_name().to_string_lossy().to_string(),
+                            file: subagent_path.to_string_lossy().to_string(),
+                            is_sidechain: true,
+                        });
+                    }
+                }
                 if txt_ids.contains(&dirname) {
                     continue;
                 }
@@ -647,12 +750,7 @@ pub fn parse_claude_jsonl(
             return (
                 Vec::new(),
                 if extract_meta {
-                    Some(SessionMeta {
-                        summary: None,
-                        custom_title: None,
-                        model: None,
-                        total_tokens: 0,
-                    })
+                    Some(SessionMeta::default())
                 } else {
                     None
                 },
@@ -661,12 +759,7 @@ pub fn parse_claude_jsonl(
     };
     let reader = BufReader::new(file);
     let mut messages = Vec::new();
-    let mut meta = SessionMeta {
-        summary: None,
-        custom_title: None,
-        model: None,
-        total_tokens: 0,
-    };
+    let mut meta = SessionMeta::default();
     let mut skip_next_assistant = false;
     let mut user_texts = Vec::new();
     let mut total_chars: usize = 0;
@@ -694,16 +787,24 @@ pub fn parse_claude_jsonl(
                 .map(String::from);
             continue;
         }
-        if etype == "custom_title" && extract_meta && meta.custom_title.is_none() {
+        if etype == "ai-title" && extract_meta {
+            if let Some(title) = entry.get("aiTitle").and_then(Value::as_str) {
+                let title = title.trim();
+                if !title.is_empty() {
+                    meta.summary = Some(title.to_string());
+                }
+            }
+            continue;
+        }
+        if (etype == "custom-title" || etype == "custom_title") && extract_meta {
             let title = entry
-                .get("custom_title")
+                .get("customTitle")
+                .or_else(|| entry.get("custom_title"))
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            if !title.is_empty() {
-                meta.custom_title = Some(title);
-            }
+            meta.custom_title = if title.is_empty() { None } else { Some(title) };
             continue;
         }
 
@@ -872,6 +973,11 @@ pub fn parse_codex_jsonl(filepath: &str) -> Vec<Message> {
             Some("message") => {
                 let role = payload.get("role").and_then(Value::as_str).unwrap_or("");
                 if role != "user" && role != "assistant" {
+                    continue;
+                }
+                if role == "assistant"
+                    && payload.get("phase").and_then(Value::as_str) == Some("commentary")
+                {
                     continue;
                 }
                 let content_raw = payload
@@ -1061,15 +1167,7 @@ pub fn parse_session(session: &Session, extract_meta: bool) -> (Vec<Message>, Op
     if session.source == "codex" {
         let messages = parse_codex_jsonl(&session.file);
         if extract_meta {
-            return (
-                messages,
-                Some(SessionMeta {
-                    summary: None,
-                    custom_title: None,
-                    model: None,
-                    total_tokens: 0,
-                }),
-            );
+            return (messages, Some(SessionMeta::default()));
         }
         return (messages, None);
     }
@@ -1496,7 +1594,7 @@ mod tests {
 {"timestamp":"2026-06-10T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>\nsandbox stuff"}]}}
 {"timestamp":"2026-06-10T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n<cwd>/Users/test/myproj</cwd>\n</environment_context>"}]}}
 {"timestamp":"2026-06-10T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"add connection pooling to the database layer"}]}}
-{"timestamp":"2026-06-10T10:00:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I'll add connection pooling using a bounded pool."}],"phase":"commentary"}}
+{"timestamp":"2026-06-10T10:00:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I'll add connection pooling using a bounded pool."}],"phase":"final_answer"}}
 {"timestamp":"2026-06-10T10:00:06.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"ls\"]}","call_id":"call_1"}}
 {"timestamp":"2026-06-10T10:00:07.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"src tests"}}
 {"timestamp":"2026-06-10T10:00:09.000Z","type":"event_msg","payload":{"type":"token_count","info":{}}}"#;
@@ -1660,22 +1758,155 @@ mod tests {
     }
 
     #[test]
-    fn read_cwd_from_jsonl_extracts_cwd() {
+    fn read_cwd_branch_from_jsonl_extracts_cwd_and_branch() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let data = r#"{"type":"user","cwd":"/Users/test/project","message":{"content":"hello"}}"#;
+        let data = r#"{"type":"user","cwd":"/Users/test/project","gitBranch":"feature-x","message":{"content":"hello"}}"#;
         std::fs::write(tmp.path(), data).unwrap();
         assert_eq!(
-            read_cwd_from_jsonl(tmp.path()),
-            Some("/Users/test/project".to_string())
+            read_cwd_branch_from_jsonl(tmp.path()),
+            (
+                Some("/Users/test/project".to_string()),
+                Some("feature-x".to_string())
+            )
         );
     }
 
     #[test]
-    fn read_cwd_from_jsonl_no_cwd() {
+    fn read_cwd_branch_from_jsonl_no_fields() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let data = r#"{"type":"user","message":{"content":"hello"}}"#;
         std::fs::write(tmp.path(), data).unwrap();
-        assert_eq!(read_cwd_from_jsonl(tmp.path()), None);
+        assert_eq!(read_cwd_branch_from_jsonl(tmp.path()), (None, None));
+    }
+
+    #[test]
+    fn claude_ai_title_reads_last_title_from_tail() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut lines =
+            vec![r#"{"type":"ai-title","aiTitle":"First title","sessionId":"abc"}"#.to_string()];
+        lines.extend(std::iter::repeat_n(
+            r#"{"type":"assistant","message":{"role":"assistant","content":"x"}}"#.to_string(),
+            50,
+        ));
+        lines.push(r#"{"type":"ai-title","aiTitle":"Final title","sessionId":"abc"}"#.to_string());
+        std::fs::write(tmp.path(), lines.join("\n")).unwrap();
+        assert_eq!(claude_ai_title(tmp.path()), Some("Final title".to_string()));
+    }
+
+    #[test]
+    fn claude_ai_title_empty_custom_title_falls_back_to_ai_title() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let data = [
+            r#"{"type":"ai-title","aiTitle":"Auto title","sessionId":"abc"}"#,
+            r#"{"type":"custom-title","customTitle":"Manual title","sessionId":"abc"}"#,
+            r#"{"type":"custom-title","customTitle":"","sessionId":"abc"}"#,
+        ]
+        .join("\n");
+        std::fs::write(tmp.path(), data).unwrap();
+        assert_eq!(claude_ai_title(tmp.path()), Some("Auto title".to_string()));
+    }
+
+    #[test]
+    fn parse_claude_jsonl_ai_title_updates_summary() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let data = concat!(
+            r#"{"type":"ai-title","aiTitle":"Old title"}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":"hi"}}"#,
+            "\n",
+            r#"{"type":"ai-title","aiTitle":"Current title"}"#,
+        );
+        std::fs::write(tmp.path(), data).unwrap();
+        let (_, meta) = parse_claude_jsonl(tmp.path().to_str().unwrap(), true);
+        assert_eq!(meta.unwrap().summary.as_deref(), Some("Current title"));
+    }
+
+    #[test]
+    fn parse_claude_jsonl_custom_title_overrides_ai_title() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let data = concat!(
+            r#"{"type":"ai-title","aiTitle":"Auto title"}"#,
+            "\n",
+            r#"{"type":"custom-title","customTitle":"Manual title"}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":"hi"}}"#,
+        );
+        std::fs::write(tmp.path(), data).unwrap();
+        let (_, meta) = parse_claude_jsonl(tmp.path().to_str().unwrap(), true);
+        let meta = meta.unwrap();
+        assert_eq!(meta.summary.as_deref(), Some("Auto title"));
+        assert_eq!(meta.custom_title.as_deref(), Some("Manual title"));
+    }
+
+    #[test]
+    fn parse_claude_jsonl_empty_custom_title_clears_manual_title() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let data = concat!(
+            r#"{"type":"ai-title","aiTitle":"Auto title"}"#,
+            "\n",
+            r#"{"type":"custom-title","customTitle":"Manual title"}"#,
+            "\n",
+            r#"{"type":"custom-title","customTitle":""}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":"hi"}}"#,
+        );
+        std::fs::write(tmp.path(), data).unwrap();
+        let (_, meta) = parse_claude_jsonl(tmp.path().to_str().unwrap(), true);
+        let meta = meta.unwrap();
+        assert_eq!(meta.summary.as_deref(), Some("Auto title"));
+        assert_eq!(meta.custom_title, None);
+    }
+
+    #[test]
+    fn parse_codex_jsonl_skips_commentary_assistant_messages() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let data = r#"{"timestamp":"2026-06-10T10:00:00.000Z","type":"session_meta","payload":{"id":"s1","timestamp":"2026-06-10T10:00:00.000Z","cwd":"/p"}}
+{"timestamp":"2026-06-10T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the parser"}]}}
+{"timestamp":"2026-06-10T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"I will inspect the files first."}]}}
+{"timestamp":"2026-06-10T10:00:03.000Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"The parser is fixed."}]}}"#;
+        std::fs::write(tmp.path(), data).unwrap();
+        let messages = parse_codex_jsonl(tmp.path().to_str().unwrap());
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].content, "The parser is fixed.");
+        assert!(
+            messages
+                .iter()
+                .all(|m| !m.content.contains("inspect the files")),
+            "commentary assistant messages should not be included"
+        );
+    }
+
+    #[test]
+    #[ignore = "manual: requires local Claude transcript"]
+    fn load_claude_sessions_populates_ai_title_summary() {
+        let sessions = load_claude_sessions();
+        let s = sessions
+            .iter()
+            .find(|s| s.id.starts_with("5e081f75"))
+            .expect("session should exist locally");
+        assert!(
+            !s.summary.is_empty(),
+            "expected ai-title summary, got empty (branch={:?})",
+            s.branch
+        );
+        assert!(!s.branch.is_empty(), "expected gitBranch from JSONL");
+    }
+
+    #[test]
+    #[ignore = "manual: requires local Claude transcript"]
+    fn claude_ai_title_real_session() {
+        let p = Path::new(concat!(
+            env!("HOME"),
+            "/.claude/projects/-Users-ayushbhardwaj-Documents-GitHub-chat-history/",
+            "5e081f75-04b9-4461-a805-8bfb9f8c75fc.jsonl"
+        ));
+        if !p.exists() {
+            return;
+        }
+        assert_eq!(
+            claude_ai_title(p).as_deref(),
+            Some("Add Codex chat-history integrations with graceful fallbacks")
+        );
     }
 
     #[test]

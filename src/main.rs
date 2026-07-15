@@ -49,6 +49,13 @@ struct Cli {
         help = "Only show sessions from current workspace"
     )]
     local: bool,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Include subagent/sidechain sessions (hidden by default)"
+    )]
+    sidechains: bool,
 }
 
 #[derive(Subcommand)]
@@ -162,7 +169,10 @@ fn main() {
         return;
     }
 
-    let sessions = load_all_sessions();
+    let mut sessions = load_all_sessions();
+    if !cli.sidechains {
+        sessions.retain(|s| !s.is_sidechain);
+    }
     let from_d = parse_date_arg(&cli.from_date);
     let to_d = parse_date_arg(&cli.to_date);
 

@@ -21,7 +21,6 @@ pub struct Session {
     pub branch: String,
     pub project: String,
     pub file: String,
-    #[allow(dead_code)]
     pub is_sidechain: bool,
 }
 
@@ -919,38 +918,61 @@ pub fn parse_claude_jsonl(
     (messages, None)
 }
 
+// Commentary-phase assistant messages are dropped only for turns that reach a
+// final_answer; interrupted turns have no other assistant text, so their
+// commentary is kept. A turn ends at the next user record (real or injected).
+fn codex_commentary_to_skip(entries: &[Value]) -> HashSet<usize> {
+    let mut skip = HashSet::new();
+    let mut open_commentary: Vec<usize> = Vec::new();
+    for (i, entry) in entries.iter().enumerate() {
+        let payload = codex_payload(entry);
+        if payload.get("type").and_then(Value::as_str) != Some("message") {
+            continue;
+        }
+        match payload.get("role").and_then(Value::as_str) {
+            Some("user") => open_commentary.clear(),
+            Some("assistant") => match payload.get("phase").and_then(Value::as_str) {
+                Some("commentary") => open_commentary.push(i),
+                Some("final_answer") => skip.extend(open_commentary.drain(..)),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    skip
+}
+
 pub fn parse_codex_jsonl(filepath: &str) -> Vec<Message> {
     let file = match fs::File::open(filepath) {
         Ok(f) => f,
         Err(_) => return Vec::new(),
     };
     let reader = BufReader::new(file);
+    let entries: Vec<Value> = reader
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|l| serde_json::from_str(l.trim()).ok())
+        .collect();
+    let skip_commentary = codex_commentary_to_skip(&entries);
+
     let mut messages: Vec<Message> = Vec::new();
     let mut session_id = String::new();
     let mut project_path = String::new();
     // Tool calls made before the assistant says anything; attached to the
     // next assistant message so they aren't lost.
     let mut pending_tools: Vec<String> = Vec::new();
+    // Set while a skipped commentary message is the turn's latest assistant
+    // output: tool calls must wait for the turn's final answer instead of
+    // attaching to the previous turn's message.
+    let mut route_tools_forward = false;
     let mut total_chars: usize = 0;
     let max_chars: usize = 4 * 1024 * 1024;
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let entry: Value = match serde_json::from_str(trimmed) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+    for (i, entry) in entries.iter().enumerate() {
         // session_meta carries id/cwd; legacy files put them flat on line 1.
         let etype = entry.get("type").and_then(Value::as_str);
         if etype == Some("session_meta") || (etype.is_none() && entry.get("id").is_some()) {
-            let p = codex_payload(&entry);
+            let p = codex_payload(entry);
             session_id = p
                 .get("id")
                 .and_then(Value::as_str)
@@ -968,16 +990,15 @@ pub fn parse_codex_jsonl(filepath: &str) -> Vec<Message> {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        let payload = codex_payload(&entry);
+        let payload = codex_payload(entry);
         match payload.get("type").and_then(Value::as_str) {
             Some("message") => {
                 let role = payload.get("role").and_then(Value::as_str).unwrap_or("");
                 if role != "user" && role != "assistant" {
                     continue;
                 }
-                if role == "assistant"
-                    && payload.get("phase").and_then(Value::as_str) == Some("commentary")
-                {
+                if skip_commentary.contains(&i) {
+                    route_tools_forward = true;
                     continue;
                 }
                 let content_raw = payload
@@ -994,6 +1015,7 @@ pub fn parse_codex_jsonl(filepath: &str) -> Vec<Message> {
                     let mut tool_uses = ctx.tools;
                     if role == "assistant" {
                         tool_uses.append(&mut pending_tools);
+                        route_tools_forward = false;
                     }
                     messages.push(Message {
                         uuid: String::new(),
@@ -1016,7 +1038,7 @@ pub fn parse_codex_jsonl(filepath: &str) -> Vec<Message> {
             Some("function_call") => {
                 if let Some(name) = payload.get("name").and_then(Value::as_str) {
                     match messages.last_mut() {
-                        Some(last) if last.role == "assistant" => {
+                        Some(last) if last.role == "assistant" && !route_tools_forward => {
                             last.tool_uses.push(name.to_string());
                         }
                         _ => pending_tools.push(name.to_string()),
@@ -1794,6 +1816,61 @@ mod tests {
     }
 
     #[test]
+    fn claude_ai_title_custom_title_beats_later_ai_title() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let data = [
+            r#"{"type":"ai-title","aiTitle":"Auto title","sessionId":"abc"}"#,
+            r#"{"type":"custom-title","customTitle":"Manual title","sessionId":"abc"}"#,
+            r#"{"type":"ai-title","aiTitle":"Newer auto title","sessionId":"abc"}"#,
+        ]
+        .join("\n");
+        std::fs::write(tmp.path(), data).unwrap();
+        assert_eq!(
+            claude_ai_title(tmp.path()),
+            Some("Manual title".to_string())
+        );
+    }
+
+    // The tail window is a deliberate tradeoff: titles more than 64KB before
+    // EOF are not found during listing. These two tests pin both sides of it.
+    #[test]
+    fn claude_ai_title_finds_title_within_64k_tail_of_large_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let filler = format!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":"{}"}}}}"#,
+            "x".repeat(200)
+        );
+        let mut lines: Vec<String> = std::iter::repeat_n(filler, 400).collect();
+        lines.push(r#"{"type":"ai-title","aiTitle":"Tail title","sessionId":"abc"}"#.to_string());
+        let data = lines.join("\n");
+        assert!(
+            data.len() > 64 * 1024,
+            "fixture must exceed the tail window"
+        );
+        std::fs::write(tmp.path(), data).unwrap();
+        assert_eq!(claude_ai_title(tmp.path()), Some("Tail title".to_string()));
+    }
+
+    #[test]
+    fn claude_ai_title_misses_title_older_than_64k_tail() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let filler = format!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":"{}"}}}}"#,
+            "x".repeat(200)
+        );
+        let mut lines =
+            vec![r#"{"type":"ai-title","aiTitle":"Head title","sessionId":"abc"}"#.to_string()];
+        lines.extend(std::iter::repeat_n(filler, 400));
+        let data = lines.join("\n");
+        assert!(
+            data.len() > 64 * 1024,
+            "fixture must exceed the tail window"
+        );
+        std::fs::write(tmp.path(), data).unwrap();
+        assert_eq!(claude_ai_title(tmp.path()), None);
+    }
+
+    #[test]
     fn claude_ai_title_empty_custom_title_falls_back_to_ai_title() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let data = [
@@ -1877,13 +1954,63 @@ mod tests {
     }
 
     #[test]
+    fn parse_codex_jsonl_keeps_commentary_for_turns_without_final_answer() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let data = r#"{"timestamp":"2026-06-10T10:00:00.000Z","type":"session_meta","payload":{"id":"s1","timestamp":"2026-06-10T10:00:00.000Z","cwd":"/p"}}
+{"timestamp":"2026-06-10T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"refactor the auth module"}]}}
+{"timestamp":"2026-06-10T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"I found a blocker in the token refresh path."}]}}
+{"timestamp":"2026-06-10T10:00:03.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<turn_aborted>user interrupted</turn_aborted>"}]}}
+{"timestamp":"2026-06-10T10:00:04.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"just fix the login bug instead"}]}}
+{"timestamp":"2026-06-10T10:00:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Login bug fixed."}]}}"#;
+        std::fs::write(tmp.path(), data).unwrap();
+        let messages = parse_codex_jsonl(tmp.path().to_str().unwrap());
+        let contents: Vec<&str> = messages.iter().map(|m| m.content.as_str()).collect();
+        assert!(
+            contents.contains(&"I found a blocker in the token refresh path."),
+            "commentary from an aborted turn (no final_answer) should be kept, got: {contents:?}"
+        );
+        assert!(contents.contains(&"Login bug fixed."));
+    }
+
+    #[test]
+    fn parse_codex_jsonl_attaches_tools_to_turn_final_answer_after_skipped_commentary() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let data = r#"{"timestamp":"2026-06-10T10:00:00.000Z","type":"session_meta","payload":{"id":"s1","timestamp":"2026-06-10T10:00:00.000Z","cwd":"/p"}}
+{"timestamp":"2026-06-10T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"do task A"}]}}
+{"timestamp":"2026-06-10T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Task A is done."}]}}
+{"timestamp":"2026-06-10T10:00:03.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n<cwd>/p</cwd>"}]}}
+{"timestamp":"2026-06-10T10:00:04.000Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"Checking the repo layout first."}]}}
+{"timestamp":"2026-06-10T10:00:05.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"ls\"]}","call_id":"call_1"}}
+{"timestamp":"2026-06-10T10:00:06.000Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Task B is done."}]}}"#;
+        std::fs::write(tmp.path(), data).unwrap();
+        let messages = parse_codex_jsonl(tmp.path().to_str().unwrap());
+        let task_a = messages
+            .iter()
+            .find(|m| m.content == "Task A is done.")
+            .expect("turn 1 final answer present");
+        let task_b = messages
+            .iter()
+            .find(|m| m.content == "Task B is done.")
+            .expect("turn 2 final answer present");
+        assert!(
+            task_a.tool_uses.is_empty(),
+            "turn 2's tool call must not attach to turn 1's answer, got {:?}",
+            task_a.tool_uses
+        );
+        assert_eq!(
+            task_b.tool_uses,
+            vec!["shell".to_string()],
+            "tool call after skipped commentary should attach to the turn's final answer"
+        );
+    }
+
+    #[test]
     #[ignore = "manual: requires local Claude transcript"]
     fn load_claude_sessions_populates_ai_title_summary() {
         let sessions = load_claude_sessions();
-        let s = sessions
-            .iter()
-            .find(|s| s.id.starts_with("5e081f75"))
-            .expect("session should exist locally");
+        let Some(s) = sessions.iter().find(|s| s.id.starts_with("5e081f75")) else {
+            return; // transcript only exists on the machine that recorded it
+        };
         assert!(
             !s.summary.is_empty(),
             "expected ai-title summary, got empty (branch={:?})",

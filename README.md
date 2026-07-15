@@ -65,6 +65,7 @@ chat-history --from "last week" --to today
 chat-history --branch feature-xyz          # filter by git branch
 chat-history -k "auth" -v                  # keyword filter, show IDs/paths
 chat-history -s                            # group by day
+chat-history --sidechains                  # include subagent/sidechain sessions
 ```
 
 ### Scored search
@@ -131,7 +132,7 @@ chat-history install-skill                 # installs SKILL.md for Claude Code +
 | Claude Code JSONL | `~/.claude/projects/*/*.jsonl` | Full conversations, `ai-title` / `custom-title`, cwd, branch, tool calls |
 | Claude Code legacy index | `~/.claude/projects/*/sessions-index.json` | Optional legacy metadata when present |
 | Cursor agent transcripts | `~/.cursor/projects/*/agent-transcripts/` | JSONL or plain-text parent sessions |
-| Cursor subagent transcripts | `~/.cursor/projects/*/agent-transcripts/*/subagents/*.jsonl` | Subagent sessions discovered separately |
+| Cursor subagent transcripts | `~/.cursor/projects/*/agent-transcripts/*/subagents/*.jsonl` | Subagent sessions, hidden unless `--sidechains` |
 | Codex CLI rollouts | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | Full conversations with tool calls (honors `$CODEX_HOME`) |
 
 ## Search scoring

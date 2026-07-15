@@ -147,6 +147,43 @@ fn setup_fixture(tmp: &TempDir) {
     .unwrap();
 }
 
+// A modern Claude session: JSONL transcript only, no sessions-index.json.
+// Summary/branch must come from the ai-title and gitBranch records.
+fn setup_claude_jsonl_only_fixture(tmp: &TempDir) {
+    let project_dir = tmp.path().join("projects").join("-Users-test-webapp");
+    fs::create_dir_all(&project_dir).unwrap();
+    let session_id = "dddddddd-eeee-ffff-0000-111111111111";
+    let lines = [
+        serde_json::json!({"type":"user","cwd":"/Users/test/webapp","gitBranch":"feat-login","message":{"role":"user","content":"wire up login form validation"},"timestamp":"2025-03-01T10:00:00Z","uuid":"u1"}),
+        serde_json::json!({"type":"assistant","message":{"role":"assistant","content":"Added validation to the login form."},"timestamp":"2025-03-01T10:01:00Z","uuid":"u2"}),
+        serde_json::json!({"type":"ai-title","aiTitle":"Login form validation","sessionId":session_id}),
+    ];
+    fs::write(
+        project_dir.join(format!("{session_id}.jsonl")),
+        lines
+            .into_iter()
+            .map(|v| serde_json::to_string(&v).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn claude_jsonl_only_session_lists_ai_title_and_branch() {
+    let tmp = TempDir::new().unwrap();
+    setup_claude_jsonl_only_fixture(&tmp);
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("HOME", tmp.path())
+        .env("NO_COLOR", "1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Login form validation"))
+        .stdout(predicate::str::contains("(feat-login)"));
+}
+
 #[test]
 fn list_shows_fixture_sessions() {
     let tmp = TempDir::new().unwrap();
@@ -1102,7 +1139,7 @@ fn cursor_session_deep_search() {
 }
 
 #[test]
-fn cursor_subagent_sessions_listed_and_searchable() {
+fn cursor_subagent_sessions_hidden_by_default() {
     let tmp = TempDir::new().unwrap();
     setup_cursor_subagent_fixture(&tmp);
 
@@ -1114,7 +1151,7 @@ fn cursor_subagent_sessions_listed_and_searchable() {
         .env("NO_COLOR", "1")
         .assert()
         .success()
-        .stdout(predicate::str::contains("audit parser edge cases"));
+        .stdout(predicate::str::contains("audit parser edge cases").not());
 
     Command::cargo_bin("chat-history")
         .unwrap()
@@ -1124,6 +1161,41 @@ fn cursor_subagent_sessions_listed_and_searchable() {
             "--source",
             "cursor",
             "--deep",
+        ])
+        .env("HOME", tmp.path())
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("NO_COLOR", "1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No results"))
+        .stdout(predicate::str::contains("parser edge case").not());
+}
+
+#[test]
+fn cursor_subagent_sessions_listed_and_searchable_with_flag() {
+    let tmp = TempDir::new().unwrap();
+    setup_cursor_subagent_fixture(&tmp);
+
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .args(["--source", "cursor", "--sidechains"])
+        .env("HOME", tmp.path())
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("NO_COLOR", "1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("audit parser edge cases"))
+        .stdout(predicate::str::contains("[subagent]"));
+
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .args([
+            "search",
+            "subagent analysis",
+            "--source",
+            "cursor",
+            "--deep",
+            "--sidechains",
         ])
         .env("HOME", tmp.path())
         .env("CLAUDE_CONFIG_DIR", tmp.path())

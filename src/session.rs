@@ -211,7 +211,12 @@ fn claude_ai_title(path: &Path) -> Option<String> {
 }
 
 pub fn encode_path_for_claude(path: &Path) -> String {
-    path.to_string_lossy().replace('/', "-")
+    // Claude Code encodes project dirs by replacing every character outside
+    // ASCII [a-zA-Z0-9] with '-' (claude-code#19972), not just separators.
+    path.to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }
 
 fn normalize_for_project_match(s: &str) -> String {
@@ -394,6 +399,12 @@ pub fn load_claude_sessions() -> Vec<Session> {
         };
         for entry in index.entries {
             indexed_ids.insert(entry.session_id.clone());
+            let date = entry
+                .created
+                .get(..10)
+                .filter(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").is_ok())
+                .map(str::to_string)
+                .unwrap_or_else(|| mtime_date(Path::new(&entry.full_path)).unwrap_or_default());
             sessions.push(Session {
                 source: "claude".into(),
                 id: entry.session_id,
@@ -401,7 +412,7 @@ pub fn load_claude_sessions() -> Vec<Session> {
                 first_prompt: entry.first_prompt.chars().take(300).collect(),
                 created: entry.created.clone(),
                 modified: entry.modified,
-                date: entry.created.get(..10).unwrap_or("").to_string(),
+                date,
                 messages: entry.message_count,
                 branch: entry.git_branch,
                 project: entry.project_path,
@@ -760,6 +771,9 @@ pub fn parse_claude_jsonl(
     let mut messages = Vec::new();
     let mut meta = SessionMeta::default();
     let mut skip_next_assistant = false;
+    // One API response is stored as one JSONL record per content block, each
+    // repeating the same message id and usage — count usage once per id.
+    let mut counted_usage_ids: HashSet<String> = HashSet::new();
     let mut user_texts = Vec::new();
     let mut total_chars: usize = 0;
     let max_chars: usize = 4 * 1024 * 1024;
@@ -839,7 +853,11 @@ pub fn parse_claude_jsonl(
             {
                 meta.model = Some(m.to_string());
             }
-            if extract_meta && let Some(usage) = msg_obj.get("usage") {
+            let msg_id = msg_obj.get("id").and_then(Value::as_str).unwrap_or("");
+            if extract_meta
+                && let Some(usage) = msg_obj.get("usage")
+                && (msg_id.is_empty() || counted_usage_ids.insert(msg_id.to_string()))
+            {
                 let tok = usage
                     .get("input_tokens")
                     .and_then(Value::as_u64)
@@ -1230,22 +1248,23 @@ pub fn filter_sessions(
     let mut out: Vec<Session> = sessions
         .iter()
         .filter(|s| {
-            if s.date.is_empty() {
-                return false;
-            }
-            let d = match NaiveDate::parse_from_str(&s.date, "%Y-%m-%d") {
-                Ok(d) => d,
-                Err(_) => return false,
-            };
-            if let Some(fd) = from_date
-                && d < fd
-            {
-                return false;
-            }
-            if let Some(td) = to_date
-                && d > td
-            {
-                return false;
+            // Only require a parseable date when a date filter is in play;
+            // a session with a missing date must still list otherwise.
+            if from_date.is_some() || to_date.is_some() {
+                let d = match NaiveDate::parse_from_str(&s.date, "%Y-%m-%d") {
+                    Ok(d) => d,
+                    Err(_) => return false,
+                };
+                if let Some(fd) = from_date
+                    && d < fd
+                {
+                    return false;
+                }
+                if let Some(td) = to_date
+                    && d > td
+                {
+                    return false;
+                }
             }
             if let Some(src) = source
                 && s.source != src
@@ -1277,27 +1296,32 @@ pub fn filter_sessions(
         })
         .cloned()
         .collect();
-    out.sort_by(|a, b| {
-        let ma = if a.modified.is_empty() {
-            &a.created
-        } else {
-            &a.modified
-        };
-        let mb = if b.modified.is_empty() {
-            &b.created
-        } else {
-            &b.modified
-        };
-        mb.cmp(ma)
-    });
+    out.sort_by_key(|s| std::cmp::Reverse(recency_key(s)));
     out
+}
+
+/// Recency ordering for "newest first" sorts and `--last`: parsed timestamp
+/// when possible (raw string comparison misorders mixed UTC offsets), raw
+/// string as a tiebreak/fallback for unparseable values.
+pub fn recency_key(s: &Session) -> (Option<DateTime<FixedOffset>>, String) {
+    let ts = if s.modified.is_empty() {
+        &s.created
+    } else {
+        &s.modified
+    };
+    (parse_any_timestamp(ts), ts.clone())
 }
 
 pub fn find_session<'a>(sessions: &'a [Session], sid: &str) -> Option<&'a Session> {
     sessions
         .iter()
-        .find(|s| s.id == sid)
-        .or_else(|| sessions.iter().find(|s| s.id.starts_with(sid)))
+        .find(|s| s.id.eq_ignore_ascii_case(sid))
+        .or_else(|| {
+            sessions.iter().find(|s| {
+                s.id.get(..sid.len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(sid))
+            })
+        })
 }
 
 #[cfg(test)]
@@ -1340,6 +1364,25 @@ mod tests {
     #[test]
     fn encode_path_root() {
         assert_eq!(encode_path_for_claude(std::path::Path::new("/")), "-");
+    }
+
+    #[test]
+    fn encode_path_replaces_all_non_alphanumerics() {
+        // Claude Code replaces every non-alphanumeric character with '-',
+        // not just '/'; dots and underscores must match its encoding or
+        // resume copies the session where Claude Code never looks.
+        let path = std::path::Path::new("/Users/x/my_app.v2");
+        assert_eq!(encode_path_for_claude(path), "-Users-x-my-app-v2");
+    }
+
+    #[test]
+    fn encode_path_replaces_non_ascii() {
+        // Claude Code keeps only ASCII alphanumerics (claude-code#19972):
+        // CJK/accented characters become '-' too.
+        let path = std::path::Path::new("/Users/x/café");
+        assert_eq!(encode_path_for_claude(path), "-Users-x-caf-");
+        let cjk = std::path::Path::new("/Users/x/研究");
+        assert_eq!(encode_path_for_claude(cjk), "-Users-x---");
     }
 
     #[test]
@@ -1478,9 +1521,46 @@ mod tests {
     }
 
     #[test]
-    fn filter_excludes_empty_date() {
+    fn find_session_is_case_insensitive() {
+        let sessions = vec![make_session(
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "2025-01-15",
+            "claude",
+            "/p",
+            "",
+            "s",
+        )];
+        assert!(find_session(&sessions, "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE").is_some());
+        assert!(find_session(&sessions, "AAAAAAAA").is_some(), "prefix");
+        assert!(find_session(&sessions, "zzzz").is_none());
+    }
+
+    #[test]
+    fn filter_sorts_by_parsed_time_not_string() {
+        // 16:00+05:30 is 10:30Z — chronologically EARLIER than 12:00Z but
+        // lexicographically greater as a string.
+        let mut offset = make_session("1", "2026-07-15", "claude", "/p", "", "offset");
+        offset.modified = "2026-07-15T16:00:00+05:30".into();
+        let mut zulu = make_session("2", "2026-07-15", "claude", "/p", "", "zulu");
+        zulu.modified = "2026-07-15T12:00:00Z".into();
+        let out = filter_sessions(&[offset, zulu], None, None, None, None, None, None);
+        assert_eq!(out[0].summary, "zulu");
+    }
+
+    #[test]
+    fn filter_keeps_dateless_sessions_when_no_date_filter() {
+        // A missing/unparseable date should only matter when the user is
+        // actually filtering by date — otherwise the session must still list.
         let sessions = vec![make_session("1", "", "claude", "/proj", "", "no date")];
         let filtered = filter_sessions(&sessions, None, None, None, None, None, None);
+        assert_eq!(filtered.len(), 1);
+    }
+
+    #[test]
+    fn filter_excludes_dateless_sessions_from_date_range() {
+        let sessions = vec![make_session("1", "", "claude", "/proj", "", "no date")];
+        let from = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
+        let filtered = filter_sessions(&sessions, Some(from), None, None, None, None, None);
         assert!(filtered.is_empty());
     }
 
@@ -2048,11 +2128,16 @@ mod tests {
     #[test]
     #[ignore = "manual: requires local Claude transcript"]
     fn claude_ai_title_real_session() {
-        let p = Path::new(concat!(
-            env!("HOME"),
-            "/.claude/projects/-Users-ayushbhardwaj-Documents-GitHub-chat-history/",
-            "5e081f75-04b9-4461-a805-8bfb9f8c75fc.jsonl"
-        ));
+        // Resolve HOME at runtime: env! would make compilation fail on any
+        // host without HOME set (e.g. Windows), even though this test is
+        // ignored — ignored tests are still compiled.
+        let Ok(home) = std::env::var("HOME") else {
+            return;
+        };
+        let p = std::path::PathBuf::from(home).join(
+            ".claude/projects/-Users-ayushbhardwaj-Documents-GitHub-chat-history/5e081f75-04b9-4461-a805-8bfb9f8c75fc.jsonl",
+        );
+        let p = p.as_path();
         if !p.exists() {
             return;
         }

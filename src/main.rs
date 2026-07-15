@@ -162,6 +162,14 @@ fn parse_date_arg(val: &Option<String>) -> Option<chrono::NaiveDate> {
 }
 
 fn main() {
+    // Rust ignores SIGPIPE by default, turning writes to a closed pipe
+    // (e.g. `chat-history ... | head`) into println! panics. Restore the
+    // conventional Unix behavior of terminating quietly.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     let cli = Cli::parse();
 
     if matches!(cli.command, Some(Commands::InstallSkill)) {
@@ -184,6 +192,18 @@ fn main() {
         cli.project.clone()
     };
 
+    // The filter flags are global, so honor them everywhere they can apply:
+    // search scoping, `--last` selection, and the default listing.
+    let filtered = filter_sessions(
+        &sessions,
+        from_d,
+        to_d,
+        cli.keyword.as_deref(),
+        cli.source.as_deref(),
+        project_filter.as_deref(),
+        cli.branch.as_deref(),
+    );
+
     match cli.command {
         Some(Commands::Search {
             query,
@@ -193,15 +213,7 @@ fn main() {
             timeframe,
             json_output,
         }) => {
-            let pre = filter_sessions(
-                &sessions,
-                from_d,
-                to_d,
-                cli.keyword.as_deref(),
-                cli.source.as_deref(),
-                project_filter.as_deref(),
-                cli.branch.as_deref(),
-            );
+            let pre = filtered;
 
             if !deep && scope == "all" && !scoring::is_uuid(&query) {
                 let idx_results = search::index_search(&pre, &query, limit);
@@ -225,6 +237,12 @@ fn main() {
                 }
             }
 
+            if scoring::is_uuid(&query)
+                && !json_output
+                && !pre.iter().any(|s| s.id.eq_ignore_ascii_case(query.trim()))
+            {
+                eprintln!("No session with that ID — searching transcripts...");
+            }
             let results = search::scored_search(&pre, &query, &scope, limit, timeframe.as_deref());
             if json_output {
                 display::print_search_results_json(&results, &query);
@@ -234,13 +252,7 @@ fn main() {
         }
         Some(Commands::Inspect { session_id, last }) => {
             let session = if last {
-                sessions.iter().max_by_key(|s| {
-                    if s.modified.is_empty() {
-                        &s.created
-                    } else {
-                        &s.modified
-                    }
-                })
+                filtered.iter().max_by_key(|s| session::recency_key(s))
             } else if let Some(sid) = &session_id {
                 find_session(&sessions, sid)
             } else {
@@ -263,13 +275,7 @@ fn main() {
             plain,
         }) => {
             let session = if last {
-                sessions.iter().max_by_key(|s| {
-                    if s.modified.is_empty() {
-                        &s.created
-                    } else {
-                        &s.modified
-                    }
-                })
+                filtered.iter().max_by_key(|s| session::recency_key(s))
             } else if let Some(sid) = &session_id {
                 find_session(&sessions, sid)
             } else {
@@ -293,7 +299,9 @@ fn main() {
                 std::process::exit(1);
             };
             let (messages, _) = parse_session(session, false);
-            display::export_transcript(&messages, session, output.as_deref());
+            if !display::export_transcript(&messages, session, output.as_deref()) {
+                std::process::exit(1);
+            }
         }
         Some(Commands::Resume { session_id }) => {
             let Some(session) = find_session(&sessions, &session_id) else {
@@ -358,15 +366,6 @@ fn main() {
         }
         Some(Commands::InstallSkill) => unreachable!(),
         None => {
-            let filtered = filter_sessions(
-                &sessions,
-                from_d,
-                to_d,
-                cli.keyword.as_deref(),
-                cli.source.as_deref(),
-                project_filter.as_deref(),
-                cli.branch.as_deref(),
-            );
             if cli.summarize {
                 display::print_summarized(&filtered);
             } else {

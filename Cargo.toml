@@ -8,7 +8,7 @@ description = "Search, inspect, and export Claude Code, Cursor, and Codex conver
 license = "MIT"
 repository = "https://github.com/ay-bh/chat-history"
 readme = "README.md"
-keywords = ["chat-history", "claude-code", "cursor-ide", "codex", "conversation", "transcript"]
+keywords = ["claude-code", "cursor-ide", "codex", "conversation", "transcript"]
 categories = ["command-line-utilities", "development-tools"]
 
 

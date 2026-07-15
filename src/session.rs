@@ -950,7 +950,7 @@ pub fn parse_codex_jsonl(filepath: &str) -> Vec<Message> {
     let reader = BufReader::new(file);
     let entries: Vec<Value> = reader
         .lines()
-        .map_while(Result::ok)
+        .filter_map(Result::ok)
         .filter_map(|l| serde_json::from_str(l.trim()).ok())
         .collect();
     let skip_commentary = codex_commentary_to_skip(&entries);
@@ -1951,6 +1951,32 @@ mod tests {
                 .all(|m| !m.content.contains("inspect the files")),
             "commentary assistant messages should not be included"
         );
+    }
+
+    #[test]
+    fn parse_codex_jsonl_continues_past_invalid_utf8_lines() {
+        use std::io::Write;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut f = std::fs::File::create(tmp.path()).unwrap();
+        writeln!(
+            f,
+            r#"{{"timestamp":"2026-06-10T10:00:01.000Z","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"first prompt"}}]}}}}"#
+        )
+        .unwrap();
+        f.write_all(b"\xff\xfe invalid utf8 line \xff\n").unwrap();
+        writeln!(
+            f,
+            r#"{{"timestamp":"2026-06-10T10:00:03.000Z","type":"response_item","payload":{{"type":"message","role":"assistant","phase":"final_answer","content":[{{"type":"output_text","text":"answer after bad line"}}]}}}}"#
+        )
+        .unwrap();
+        drop(f);
+        let messages = parse_codex_jsonl(tmp.path().to_str().unwrap());
+        assert_eq!(
+            messages.len(),
+            2,
+            "lines after an invalid UTF-8 line must still be parsed"
+        );
+        assert_eq!(messages[1].content, "answer after bad line");
     }
 
     #[test]

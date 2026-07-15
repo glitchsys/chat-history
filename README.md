@@ -65,11 +65,12 @@ chat-history --from "last week" --to today
 chat-history --branch feature-xyz          # filter by git branch
 chat-history -k "auth" -v                  # keyword filter, show IDs/paths
 chat-history -s                            # group by day
+chat-history --sidechains                  # include subagent/sidechain sessions
 ```
 
 ### Scored search
 
-By default, search checks session metadata (summary, first prompt, branch) without parsing transcript files. This is fast — sub-second. Weak index results (★ < 5.0) automatically fall through to deep transcript search. Use `--deep` to force full transcript search, or `--scope` for specialized searches.
+By default, search checks session metadata (title/summary, first prompt, branch, project) without parsing full transcript bodies. This is fast — sub-second. Weak index results (★ < 5.0) automatically fall through to deep transcript search. Use `--deep` to force full transcript search, or `--scope` for specialized searches.
 
 ```bash
 # Fast index search (sub-second, checks summary/prompt/branch)
@@ -128,16 +129,17 @@ chat-history install-skill                 # installs SKILL.md for Claude Code +
 
 | Source | Path | What it contains |
 |---|---|---|
-| Claude Code index | `~/.claude/projects/*/sessions-index.json` | Summary, dates, branch, message count |
-| Claude Code JSONL | `~/.claude/projects/*/*.jsonl` | Full conversations with tool calls |
-| Cursor agent transcripts | `~/.cursor/projects/*/agent-transcripts/` | JSONL or plain-text transcripts |
-| Codex CLI rollouts | `~/.codex/sessions/*/rollout-*.jsonl` | Full conversations with tool calls (honors `$CODEX_HOME`) |
+| Claude Code JSONL | `~/.claude/projects/*/*.jsonl` | Full conversations, `ai-title` / `custom-title`, cwd, branch, tool calls |
+| Claude Code legacy index | `~/.claude/projects/*/sessions-index.json` | Optional legacy metadata when present |
+| Cursor agent transcripts | `~/.cursor/projects/*/agent-transcripts/` | JSONL or plain-text parent sessions |
+| Cursor subagent transcripts | `~/.cursor/projects/*/agent-transcripts/*/subagents/*.jsonl` | Subagent sessions, hidden unless `--sidechains` |
+| Codex CLI rollouts | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | Full conversations with tool calls (honors `$CODEX_HOME`) |
 
 ## Search scoring
 
 ### Index search (default)
 
-Searches `sessions-index.json` metadata with field-weighted scoring:
+Searches loaded session metadata with field-weighted scoring. For modern Claude Code installs this metadata is derived directly from JSONL records (`ai-title`, `custom-title`, first prompt, cwd, and `gitBranch`); `sessions-index.json` is used only when present.
 
 - **Summary match** — 3x weight
 - **First prompt match** — 2x weight

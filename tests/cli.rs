@@ -147,6 +147,43 @@ fn setup_fixture(tmp: &TempDir) {
     .unwrap();
 }
 
+// A modern Claude session: JSONL transcript only, no sessions-index.json.
+// Summary/branch must come from the ai-title and gitBranch records.
+fn setup_claude_jsonl_only_fixture(tmp: &TempDir) {
+    let project_dir = tmp.path().join("projects").join("-Users-test-webapp");
+    fs::create_dir_all(&project_dir).unwrap();
+    let session_id = "dddddddd-eeee-ffff-0000-111111111111";
+    let lines = [
+        serde_json::json!({"type":"user","cwd":"/Users/test/webapp","gitBranch":"feat-login","message":{"role":"user","content":"wire up login form validation"},"timestamp":"2025-03-01T10:00:00Z","uuid":"u1"}),
+        serde_json::json!({"type":"assistant","message":{"role":"assistant","content":"Added validation to the login form."},"timestamp":"2025-03-01T10:01:00Z","uuid":"u2"}),
+        serde_json::json!({"type":"ai-title","aiTitle":"Login form validation","sessionId":session_id}),
+    ];
+    fs::write(
+        project_dir.join(format!("{session_id}.jsonl")),
+        lines
+            .into_iter()
+            .map(|v| serde_json::to_string(&v).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn claude_jsonl_only_session_lists_ai_title_and_branch() {
+    let tmp = TempDir::new().unwrap();
+    setup_claude_jsonl_only_fixture(&tmp);
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("HOME", tmp.path())
+        .env("NO_COLOR", "1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Login form validation"))
+        .stdout(predicate::str::contains("(feat-login)"));
+}
+
 #[test]
 fn list_shows_fixture_sessions() {
     let tmp = TempDir::new().unwrap();
@@ -315,7 +352,7 @@ fn setup_transcript_fixture(tmp: &TempDir) {
     let session_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     let jsonl_path = project_dir.join(format!("{session_id}.jsonl"));
 
-    let messages = vec![
+    let messages = [
         serde_json::json!({"type":"user","cwd":"/Users/test/project","message":{"role":"user","content":"help me configure webpack for production builds"},"timestamp":"2025-01-15T10:00:00Z","uuid":"u1"}),
         serde_json::json!({"type":"assistant","message":{"role":"assistant","content":"I'll help you configure webpack for production. Here's the optimized configuration with code splitting and tree shaking enabled for better performance."},"timestamp":"2025-01-15T10:01:00Z","uuid":"u2"}),
         serde_json::json!({"type":"user","message":{"role":"user","content":"now add the docker deployment configuration"},"timestamp":"2025-01-15T10:02:00Z","uuid":"u3"}),
@@ -357,7 +394,7 @@ fn setup_rich_transcript_fixture(tmp: &TempDir) {
     let session_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     let jsonl_path = project_dir.join(format!("{session_id}.jsonl"));
 
-    let messages = vec![
+    let messages = [
         serde_json::json!({
             "type": "user",
             "cwd": "/Users/test/project",
@@ -728,7 +765,7 @@ fn deep_search_json_combined() {
     let first = &results[0];
     assert_eq!(first["session_id"], "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
     assert!(
-        first["snippet"].as_str().unwrap().len() > 0,
+        !first["snippet"].as_str().unwrap().is_empty(),
         "snippet should have content"
     );
     assert!(
@@ -855,6 +892,38 @@ fn setup_cursor_fixture(tmp: &TempDir) {
     fs::write(
         transcripts_dir.join(format!("{session_id}.txt")),
         txt_content,
+    )
+    .unwrap();
+}
+
+fn setup_cursor_subagent_fixture(tmp: &TempDir) {
+    let transcripts_dir = tmp
+        .path()
+        .join(".cursor")
+        .join("projects")
+        .join("Users-test-myapp")
+        .join("agent-transcripts");
+    let parent_id = "cccccccc-dddd-eeee-ffff-000000000000";
+    let subagent_id = "eeeeeeee-ffff-0000-1111-222222222222";
+    let subagents_dir = transcripts_dir.join(parent_id).join("subagents");
+    fs::create_dir_all(&subagents_dir).unwrap();
+    let jsonl = [
+        serde_json::json!({
+            "role": "user",
+            "message": {"content": [{"type": "text", "text": "audit parser edge cases"}]}
+        }),
+        serde_json::json!({
+            "role": "assistant",
+            "message": {"content": [{"type": "text", "text": "I found a parser edge case in subagent analysis."}]}
+        }),
+    ];
+    fs::write(
+        subagents_dir.join(format!("{subagent_id}.jsonl")),
+        jsonl
+            .into_iter()
+            .map(|v| serde_json::to_string(&v).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n"),
     )
     .unwrap();
 }
@@ -1067,6 +1136,73 @@ fn cursor_session_deep_search() {
         .assert()
         .success()
         .stdout(predicate::str::contains("pooling"));
+}
+
+#[test]
+fn cursor_subagent_sessions_hidden_by_default() {
+    let tmp = TempDir::new().unwrap();
+    setup_cursor_subagent_fixture(&tmp);
+
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .args(["--source", "cursor"])
+        .env("HOME", tmp.path())
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("NO_COLOR", "1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("audit parser edge cases").not());
+
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .args([
+            "search",
+            "subagent analysis",
+            "--source",
+            "cursor",
+            "--deep",
+        ])
+        .env("HOME", tmp.path())
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("NO_COLOR", "1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No results"))
+        .stdout(predicate::str::contains("parser edge case").not());
+}
+
+#[test]
+fn cursor_subagent_sessions_listed_and_searchable_with_flag() {
+    let tmp = TempDir::new().unwrap();
+    setup_cursor_subagent_fixture(&tmp);
+
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .args(["--source", "cursor", "--sidechains"])
+        .env("HOME", tmp.path())
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("NO_COLOR", "1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("audit parser edge cases"))
+        .stdout(predicate::str::contains("[subagent]"));
+
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .args([
+            "search",
+            "subagent analysis",
+            "--source",
+            "cursor",
+            "--deep",
+            "--sidechains",
+        ])
+        .env("HOME", tmp.path())
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("NO_COLOR", "1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("subagent analysis"));
 }
 
 #[test]

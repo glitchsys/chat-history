@@ -55,7 +55,7 @@ fn extract_sentence_around(text: &str, keyword: &str) -> Option<String> {
     let sentence = text[start..end].trim();
     if sentence.len() > 200 {
         let trunc = text.floor_char_boundary(start + 197).min(end);
-        Some(format!("{}...", &text[start..trunc].trim()))
+        Some(format!("{}...", text[start..trunc].trim()))
     } else {
         Some(sentence.to_string())
     }
@@ -66,12 +66,7 @@ pub fn inspect_session(session: &Session) -> Option<InspectInfo> {
     if messages.is_empty() {
         return None;
     }
-    let meta = meta_opt.unwrap_or(SessionMeta {
-        summary: None,
-        custom_title: None,
-        model: None,
-        total_tokens: 0,
-    });
+    let meta = meta_opt.unwrap_or_default();
 
     let mut tools_used: BTreeSet<String> = BTreeSet::new();
     let mut files_modified: BTreeSet<String> = BTreeSet::new();

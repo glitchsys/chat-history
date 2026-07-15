@@ -69,13 +69,18 @@ pub fn print_list(sessions: &[Session], verbose: bool) {
         } else {
             format!(" {}({}){}", c!("magenta"), s.branch, c!("reset"))
         };
+        let sidechain = if s.is_sidechain {
+            format!(" {}[subagent]{}", c!("dim"), c!("reset"))
+        } else {
+            String::new()
+        };
         let msgs = if s.messages > 0 {
             format!(" {}[{} msgs]{}", c!("dim"), s.messages, c!("reset"))
         } else {
             String::new()
         };
         println!(
-            "  {}{:3}.{} {} {}{}{}  {}{}{}{}{}",
+            "  {}{:3}.{} {} {}{}{}  {}{}{}{}{}{}",
             c!("dim"),
             i + 1,
             c!("reset"),
@@ -86,6 +91,7 @@ pub fn print_list(sessions: &[Session], verbose: bool) {
             c!("bold"),
             summary,
             c!("reset"),
+            sidechain,
             branch,
             msgs
         );

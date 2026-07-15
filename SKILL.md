@@ -20,7 +20,7 @@ This installs both `chat-history` and `ch` (short alias) into `~/.cargo/bin/`.
 - User asks about past conversations or sessions
 - User wants to find something they discussed before
 - User needs a summary of recent work / accomplishments
-- User wants to search across all Claude Code or Cursor history
+- User wants to search across Claude Code, Cursor, or Codex history
 - User wants to resume or export a previous session
 
 ## Commands
@@ -70,6 +70,10 @@ The short alias `ch` works identically: `ch search "auth"`, `ch inspect --last`,
 - Score (`★ N.N`) = relevance score (higher = better match)
 - `[summary]`, `[first_prompt]`, `[branch]` = which field matched in index search
 - `inspect` shows: duration, message count, model name, token count, tools used, files touched, accomplishments, key decisions
+- Claude Code titles come from modern `ai-title` / `custom-title` JSONL records when available
+- Cursor subagent transcripts under `agent-transcripts/*/subagents/` are hidden by default; pass `--sidechains` to list them (tagged `[subagent]`)
+- Codex commentary-phase assistant messages are hidden for turns that reached a final answer; interrupted turns keep their commentary
+- Codex sessions are read from `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` (or `~/.codex` by default)
 
 ## Date formats accepted
 

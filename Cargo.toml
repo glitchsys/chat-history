@@ -1,14 +1,14 @@
 [package]
 name = "chat-history"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 rust-version = "1.91"
 authors = ["Ayush Bhardwaj"]
-description = "Search, inspect, and export Claude Code + Cursor conversation history"
+description = "Search, inspect, and export Claude Code, Cursor, and Codex conversation history"
 license = "MIT"
 repository = "https://github.com/ay-bh/chat-history"
 readme = "README.md"
-keywords = ["chat-history", "claude-code", "cursor-ide", "conversation", "transcript"]
+keywords = ["chat-history", "claude-code", "cursor-ide", "codex", "conversation", "transcript"]
 categories = ["command-line-utilities", "development-tools"]
 
 

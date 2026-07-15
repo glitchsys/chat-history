@@ -943,14 +943,14 @@ fn codex_commentary_to_skip(entries: &[Value]) -> HashSet<usize> {
 }
 
 pub fn parse_codex_jsonl(filepath: &str) -> Vec<Message> {
-    let file = match fs::File::open(filepath) {
-        Ok(f) => f,
-        Err(_) => return Vec::new(),
+    // Whole-file read + lossy decode: an unreadable path fails once up front
+    // (io::Lines can yield Err forever), and an invalid UTF-8 line only
+    // corrupts itself instead of truncating the rest of the transcript.
+    let Ok(bytes) = fs::read(filepath) else {
+        return Vec::new();
     };
-    let reader = BufReader::new(file);
-    let entries: Vec<Value> = reader
+    let entries: Vec<Value> = String::from_utf8_lossy(&bytes)
         .lines()
-        .filter_map(Result::ok)
         .filter_map(|l| serde_json::from_str(l.trim()).ok())
         .collect();
     let skip_commentary = codex_commentary_to_skip(&entries);

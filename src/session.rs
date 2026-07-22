@@ -1,4 +1,6 @@
-use crate::parser::{clean_prompt, extract_text, is_clear_metadata, is_warmup_message};
+use crate::parser::{
+    clean_first_prompt, clean_prompt, extract_text, is_clear_metadata, is_warmup_message,
+};
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use serde::Deserialize;
 use serde_json::Value;
@@ -109,7 +111,11 @@ fn cursor_projects_dir() -> PathBuf {
 }
 
 pub fn codex_home() -> PathBuf {
-    if let Some(dir) = std::env::var_os("CODEX_HOME") {
+    // A set-but-empty CODEX_HOME conventionally means unset; honoring it
+    // would resolve everything relative to the current directory.
+    if let Some(dir) = std::env::var_os("CODEX_HOME")
+        && !dir.is_empty()
+    {
         return PathBuf::from(dir);
     }
     home_dir().join(".codex")
@@ -336,16 +342,31 @@ fn cursor_first_prompt_jsonl(path: &Path) -> String {
         Err(_) => return String::new(),
     };
     let reader = BufReader::new(file);
-    if let Some(Ok(line)) = reader.lines().next()
-        && let Ok(entry) = serde_json::from_str::<Value>(&line)
-    {
+    for line in reader.lines() {
+        let Ok(line) = line else { continue };
+        let Ok(entry) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        // Role lives at the top level in Cursor agent transcripts; entries
+        // without one are kept as candidates for older formats.
+        if let Some(role) = entry.get("role").and_then(Value::as_str)
+            && role != "user"
+        {
+            continue;
+        }
         let content = entry
             .get("message")
             .and_then(|m| m.get("content"))
             .cloned()
             .unwrap_or(Value::String(String::new()));
         let text = extract_text(&content);
-        return text.chars().take(300).collect();
+        // Clean before truncating: the first user message often opens with
+        // kilobytes of preamble tags, and a raw prefix would cut off before
+        // the actual query.
+        let cleaned = clean_first_prompt(&text);
+        if !cleaned.is_empty() && !is_warmup_message(&cleaned) && !is_clear_metadata(&cleaned) {
+            return cleaned.chars().take(300).collect();
+        }
     }
     String::new()
 }
@@ -1315,16 +1336,38 @@ pub fn recency_key(s: &Session) -> (Option<DateTime<FixedOffset>>, String) {
     (parse_any_timestamp(ts), ts.clone())
 }
 
-pub fn find_session<'a>(sessions: &'a [Session], sid: &str) -> Option<&'a Session> {
-    sessions
+pub enum SessionLookup<'a> {
+    Found(&'a Session),
+    /// Multiple sessions share the prefix — never silently pick one.
+    Ambiguous(Vec<&'a Session>),
+    NotFound,
+}
+
+pub fn lookup_session<'a>(sessions: &'a [Session], sid: &str) -> SessionLookup<'a> {
+    if let Some(s) = sessions.iter().find(|s| s.id.eq_ignore_ascii_case(sid)) {
+        return SessionLookup::Found(s);
+    }
+    let matches: Vec<&Session> = sessions
         .iter()
-        .find(|s| s.id.eq_ignore_ascii_case(sid))
-        .or_else(|| {
-            sessions.iter().find(|s| {
-                s.id.get(..sid.len())
-                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(sid))
-            })
+        .filter(|s| {
+            s.id.get(..sid.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(sid))
         })
+        .collect();
+    match matches.len() {
+        0 => SessionLookup::NotFound,
+        1 => SessionLookup::Found(matches[0]),
+        _ => SessionLookup::Ambiguous(matches),
+    }
+}
+
+/// Exact id or *unique* prefix. Ambiguous prefixes resolve to None; callers
+/// that can report candidates should use [`lookup_session`] instead.
+pub fn find_session<'a>(sessions: &'a [Session], sid: &str) -> Option<&'a Session> {
+    match lookup_session(sessions, sid) {
+        SessionLookup::Found(s) => Some(s),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1386,6 +1429,25 @@ mod tests {
         assert_eq!(encode_path_for_claude(path), "-Users-x-caf-");
         let cjk = std::path::Path::new("/Users/x/研究");
         assert_eq!(encode_path_for_claude(cjk), "-Users-x---");
+    }
+
+    #[test]
+    fn lookup_session_reports_ambiguous_prefix() {
+        let sessions = vec![
+            make_session("abc-123", "2025-01-01", "claude", "/proj", "main", "one"),
+            make_session("abc-456", "2025-01-02", "cursor", "/proj", "main", "two"),
+        ];
+        match lookup_session(&sessions, "abc") {
+            SessionLookup::Ambiguous(candidates) => assert_eq!(candidates.len(), 2),
+            _ => panic!("expected ambiguous lookup"),
+        }
+        // find_session must not silently pick one of them.
+        assert!(find_session(&sessions, "abc").is_none());
+        // A unique longer prefix still resolves.
+        assert!(matches!(
+            lookup_session(&sessions, "abc-1"),
+            SessionLookup::Found(s) if s.id == "abc-123"
+        ));
     }
 
     #[test]
@@ -1787,6 +1849,37 @@ mod tests {
     #[test]
     fn parse_codex_jsonl_nonexistent_file() {
         assert!(parse_codex_jsonl("/nonexistent/rollout.jsonl").is_empty());
+    }
+
+    #[test]
+    fn cursor_first_prompt_recovers_query_after_long_preamble() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let filler = "x".repeat(500);
+        let data = format!(
+            concat!(
+                r#"{{"role":"user","message":{{"content":[{{"type":"text","text":"<manually_attached_skills>\n{}\n</manually_attached_skills>\n<timestamp>Tuesday, Jul 21, 2026</timestamp>\n<user_query>\nreview security compliance\n</user_query>"}}]}}}}"#,
+                "\n",
+                r#"{{"role":"assistant","message":{{"content":[{{"type":"text","text":"On it."}}]}}}}"#
+            ),
+            filler
+        );
+        std::fs::write(tmp.path(), data).unwrap();
+        assert_eq!(
+            cursor_first_prompt_jsonl(tmp.path()),
+            "review security compliance"
+        );
+    }
+
+    #[test]
+    fn cursor_first_prompt_skips_assistant_lines() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let data = concat!(
+            r#"{"role":"assistant","message":{"content":[{"type":"text","text":"Thinking about the plan."}]}}"#,
+            "\n",
+            r#"{"role":"user","message":{"content":[{"type":"text","text":"fix the login bug"}]}}"#
+        );
+        std::fs::write(tmp.path(), data).unwrap();
+        assert_eq!(cursor_first_prompt_jsonl(tmp.path()), "fix the login bug");
     }
 
     #[test]

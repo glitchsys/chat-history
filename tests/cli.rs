@@ -249,6 +249,168 @@ fn skill_targets_honor_userprofile_without_home() {
     );
 }
 
+#[test]
+fn list_shows_short_ids_by_default() {
+    let tmp = TempDir::new().unwrap();
+    setup_fixture(&tmp);
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("HOME", tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("aaaaaaaa"))
+        .stdout(predicate::str::contains("11111111"))
+        .stdout(predicate::str::contains("aaaaaaaa-bbbb").not());
+}
+
+#[test]
+fn summarized_shows_short_ids() {
+    let tmp = TempDir::new().unwrap();
+    setup_fixture(&tmp);
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .arg("-s")
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("HOME", tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("aaaaaaaa"))
+        .stdout(predicate::str::contains("11111111"));
+}
+
+#[test]
+fn list_title_is_single_line_without_preamble() {
+    let tmp = TempDir::new().unwrap();
+    let project_dir = tmp.path().join("projects").join("-Users-test-noisy");
+    fs::create_dir_all(&project_dir).unwrap();
+    let index = serde_json::json!({
+        "entries": [{
+            "sessionId": "99999999-8888-7777-6666-555555555555",
+            "summary": "",
+            "firstPrompt": "<manually_attached_skills>\nThe user has manually attached the following skills to their message.\n</manually_attached_skills>\nfix the flaky\n\ntest suite",
+            "created": "2025-04-01T10:00:00Z",
+            "modified": "2025-04-01T11:00:00Z",
+            "messageCount": 2,
+            "gitBranch": "",
+            "projectPath": "/Users/test/noisy",
+            "fullPath": "",
+            "isSidechain": false
+        }]
+    });
+    fs::write(
+        project_dir.join("sessions-index.json"),
+        serde_json::to_string(&index).unwrap(),
+    )
+    .unwrap();
+
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("HOME", tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fix the flaky test suite"))
+        .stdout(predicate::str::contains("manually_attached_skills").not());
+}
+
+#[test]
+fn local_flag_is_accepted_after_subcommands() {
+    let tmp = TempDir::new().unwrap();
+    setup_fixture(&tmp);
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .args(["search", "nomatchquery", "-L"])
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("HOME", tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("unexpected argument").not());
+}
+
+#[test]
+fn empty_codex_home_is_treated_as_unset() {
+    let tmp = TempDir::new().unwrap();
+    let cwd = TempDir::new().unwrap();
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .arg("install-skill")
+        .current_dir(cwd.path())
+        .env("HOME", tmp.path())
+        .env_remove("USERPROFILE")
+        .env("CODEX_HOME", "")
+        .assert()
+        .success();
+    // Falls back to ~/.codex instead of a cwd-relative skills/ directory.
+    assert!(
+        tmp.path()
+            .join(".codex/skills/chat-history/SKILL.md")
+            .exists()
+    );
+    assert!(!cwd.path().join("skills").exists());
+}
+
+#[test]
+fn ambiguous_short_id_lists_candidates_and_fails() {
+    let tmp = TempDir::new().unwrap();
+    let project_dir = tmp.path().join("projects").join("-Users-test-ambig");
+    fs::create_dir_all(&project_dir).unwrap();
+    let index = serde_json::json!({
+        "entries": [{
+            "sessionId": "abcd1234-0000-0000-0000-000000000001",
+            "summary": "first candidate",
+            "firstPrompt": "one",
+            "created": "2025-05-01T10:00:00Z",
+            "modified": "2025-05-01T11:00:00Z",
+            "messageCount": 2,
+            "gitBranch": "",
+            "projectPath": "/Users/test/ambig",
+            "fullPath": "",
+            "isSidechain": false
+        }, {
+            "sessionId": "abcd1234-0000-0000-0000-000000000002",
+            "summary": "second candidate",
+            "firstPrompt": "two",
+            "created": "2025-05-02T10:00:00Z",
+            "modified": "2025-05-02T11:00:00Z",
+            "messageCount": 2,
+            "gitBranch": "",
+            "projectPath": "/Users/test/ambig",
+            "fullPath": "",
+            "isSidechain": false
+        }]
+    });
+    fs::write(
+        project_dir.join("sessions-index.json"),
+        serde_json::to_string(&index).unwrap(),
+    )
+    .unwrap();
+
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .args(["find", "abcd1234"])
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("HOME", tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ambiguous"))
+        .stderr(predicate::str::contains(
+            "abcd1234-0000-0000-0000-000000000001",
+        ))
+        .stderr(predicate::str::contains(
+            "abcd1234-0000-0000-0000-000000000002",
+        ));
+
+    // A longer, unique prefix still resolves.
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .args(["find", "abcd1234-0000-0000-0000-000000000001"])
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("HOME", tmp.path())
+        .assert()
+        .success();
+}
+
 fn setup_fixture(tmp: &TempDir) {
     let project_dir = tmp.path().join("projects").join("-Users-test-project");
     fs::create_dir_all(&project_dir).unwrap();

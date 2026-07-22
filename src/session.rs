@@ -87,11 +87,14 @@ struct IndexEntry {
 }
 
 fn home_dir() -> PathBuf {
-    dirs_next().unwrap_or_else(|| PathBuf::from("."))
+    user_home().unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn dirs_next() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+/// Resolve the user home directory (macOS/Linux `HOME`, Windows `USERPROFILE`).
+pub fn user_home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
 }
 
 pub fn claude_projects_dir() -> PathBuf {

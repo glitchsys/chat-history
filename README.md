@@ -4,7 +4,7 @@ CLI for **agents** to search, inspect, and export **Claude Code**, **Cursor**, a
 
 Most usage is via an agent skill (`SKILL.md`) that tells Claude Code / Cursor / Codex when and how to call this tool — not interactive human browsing.
 
-![Agent using chat-history to summarize past project work](docs/assets/usage.png)
+<img src="docs/assets/usage.png" alt="Agent using chat-history to summarize past project work" width="420" />
 
 Scoring logic ported from [claude-historian-mcp](https://github.com/Vvkmnn/claude-historian-mcp), [claude-history](https://github.com/raine/claude-history), and [search-sessions](https://github.com/sinzin91/search-sessions), with Cursor transcript parsing inspired by [cursor-history](https://github.com/S2thend/cursor-history).
 

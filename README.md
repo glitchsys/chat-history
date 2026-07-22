@@ -1,26 +1,29 @@
 # chat-history
 
-A fast Rust CLI to search, inspect, and export **Claude Code**, **Cursor**, and **OpenAI Codex CLI** conversation history.
+CLI for **agents** to search, inspect, and export **Claude Code**, **Cursor**, and **OpenAI Codex** conversation history.
+
+Most usage is via an agent skill (`SKILL.md`) that tells Claude Code / Cursor / Codex when and how to call this tool — not interactive human browsing.
+
+![Agent using chat-history to summarize past project work](docs/assets/usage.png)
 
 Scoring logic ported from [claude-historian-mcp](https://github.com/Vvkmnn/claude-historian-mcp), [claude-history](https://github.com/raine/claude-history), and [search-sessions](https://github.com/sinzin91/search-sessions), with Cursor transcript parsing inspired by [cursor-history](https://github.com/S2thend/cursor-history).
 
-## Install
-
-Requires [Rust](https://rustup.rs/). Then:
+## Setup (for agents)
 
 ```bash
 cargo install chat-history
-```
-
-This installs both `chat-history` and `ch` (short alias) into `~/.cargo/bin/`.
-
-### Install the agent skill (recommended)
-
-```bash
 chat-history install-skill
 ```
 
-This writes the bundled `SKILL.md` to `~/.cursor/skills/chat-history/`, `~/.claude/skills/chat-history/`, and `~/.codex/skills/chat-history/`, giving Claude Code, Cursor, and Codex agents the ability to search your conversation history automatically. Re-run after upgrading to pick up skill updates.
+`cargo install` puts `chat-history` and `ch` on `PATH` (`~/.cargo/bin/`).
+
+`install-skill` writes the bundled skill to:
+
+- `~/.cursor/skills/chat-history/SKILL.md`
+- `~/.claude/skills/chat-history/SKILL.md`
+- `$CODEX_HOME/skills/chat-history/SKILL.md` (or `~/.codex/...`)
+
+Re-run `install-skill` after upgrades. The skill is active immediately — no restart needed.
 
 ### Build from source
 
@@ -28,160 +31,109 @@ This writes the bundled `SKILL.md` to `~/.cursor/skills/chat-history/`, `~/.clau
 git clone https://github.com/ay-bh/chat-history.git
 cd chat-history
 cargo install --path .
+chat-history install-skill
 ```
 
-## Quick start
+## Agent usage
+
+When a user asks about past conversations, recent work, or something they discussed before, call the CLI. For search, prefer JSON output so the agent can parse results reliably. `inspect` and `view` return text.
+
+### Preferred invocations
 
 ```bash
-chat-history                               # list all sessions, newest first
-chat-history --from yesterday -s           # yesterday's sessions, grouped by day
-chat-history search "auth error"           # fast index search (sub-second)
-chat-history search "auth error" --deep    # full transcript search (thorough)
-chat-history inspect --last                # session summary with accomplishments
-chat-history view --last --plain | head    # pipe transcript to other tools
+# List recent sessions
+chat-history
+chat-history --from yesterday -s
+chat-history -L                         # current workspace only
+
+# Search — use --json; add --deep for full-transcript, all-scope search
+chat-history search "auth error" --deep --json
+chat-history search "timeout" --scope errors --json
+chat-history search "trade" --scope similar --json
+chat-history search <full-uuid> --json
+
+# Summarize a session
+chat-history inspect --last
+chat-history inspect <partial-uuid>
+
+# Read / export / resume / locate
+chat-history view --last --plain
+chat-history view <id> --tools
+chat-history export <id> -o session.md
+chat-history resume <id>                  # Claude Code or Codex only
+chat-history find <id>                    # absolute path for further tooling
 ```
 
-`ch` works as a drop-in alias for `chat-history`:
+`ch` is a drop-in alias: `ch search "auth" --deep --json`.
+
+### Narrowing scope
+
+These filters apply to session listing, `search`, and `--last` selection. Explicit session-id lookups (`inspect` / `view` / `export` / `resume` / `find`) resolve by id and ignore date/source/project filters. `--sidechains` still controls whether sidechain sessions are loaded at all.
 
 ```bash
-ch search "docker config"
-ch inspect --last
+# Listing / search / --last filters
+chat-history --source claude              # claude | cursor | codex
+chat-history --project chat-history
+chat-history --branch feature-xyz
+chat-history --from "3 days ago" --to today
+chat-history --sidechains                 # include hidden subagent/sidechain sessions
+
+# Apply workspace scope to a search (-L must precede the subcommand)
+chat-history -L search "auth" --deep --json
+
+# Listing-only presentation flags
+chat-history --from yesterday -s          # group by day
+chat-history -k "auth" -v                 # show IDs and paths
 ```
 
-## Commands
+Date formats: `YYYY-MM-DD`, `today`, `yesterday`, `"3 days ago"`, `"last week"`, `"last month"`.
 
-### List sessions (default)
+### Search behavior for agents
 
-```bash
-chat-history                               # all sessions
-chat-history -L                            # current workspace only
-chat-history --source claude               # Claude Code sessions only
-chat-history --source cursor               # Cursor sessions only
-chat-history --source codex                # Codex sessions only
-chat-history --from 2026-03-01 --to 2026-03-20
-chat-history --from yesterday              # natural language dates
-chat-history --from "3 days ago"           # relative dates
-chat-history --from "last week" --to today
-chat-history --branch feature-xyz          # filter by git branch
-chat-history -k "auth" -v                  # keyword filter, show IDs/paths
-chat-history -s                            # group by day
-chat-history --sidechains                  # include subagent/sidechain sessions
-```
+| Flag | Why |
+|---|---|
+| `--deep` | Force full transcript search for the default `all` scope. Specialized scopes already scan transcript content. Snippets are match-centered, not message prefixes. |
+| `--json` | Machine-readable search output. This flag is available on `search`, not `inspect` or `view`. |
+| (default index) | Fast metadata-only search (title/summary, first prompt, branch, project). Weak results (★ < 5.0) fall through to deep search automatically. |
 
-### Scored search
+All JSON output uses a `{ "query", "count", "results" }` envelope. Deep-search result items include `session_id`, `source`, `date`, `summary`, `project`, `score`, `role`, `snippet`, `tools`, and `files`. Index result items include `matched_field` instead of `role`, `tools`, and `files`, and the envelope includes `"search_type": "index"`.
 
-By default, search checks session metadata (title/summary, first prompt, branch, project) without parsing full transcript bodies. This is fast — sub-second. Weak index results (★ < 5.0) automatically fall through to deep transcript search. Use `--deep` to force full transcript search, or `--scope` for specialized searches.
+Scopes: `all` (default), `errors`, `similar`, `tools`, `files`. Use `--timeframe today|week|month|Nd` and `--limit N` (default 15) to constrain results.
 
-```bash
-# Fast index search (sub-second, checks summary/prompt/branch)
-chat-history search "docker auth"
-chat-history search "trade_assets"         # _ treated as word separator
-chat-history search "auth"                 # prefix: matches "authentication"
+Human-readable results include an 8-char UUID prefix (e.g. `[e363d98d]`) — pass that to `inspect`, `view`, `export`, `resume`, or `find`.
 
-# Deep transcript search (searches inside messages)
-chat-history search "docker auth" --deep
-chat-history search "fix" --scope errors   # only error patterns
-chat-history search "trade" --scope similar  # find similar past queries
-chat-history search "Edit" --scope tools   # tool usage patterns
-chat-history search "config" --scope files # file operations
-chat-history search "e7d318b1-..."         # UUID direct lookup
-chat-history search "auth" --timeframe week  # time window: today/week/month/Nd
+### Interpreting output
 
-# Structured output for programmatic/agent use
-chat-history search "cache fix" --json
-chat-history search "auth" --deep --json
-```
-
-Search results include an 8-char session UUID prefix (e.g. `[e363d98d]`) so you can immediately drill into a result with `chat-history inspect e363d98d` or `chat-history view e363d98d`.
-
-### Inspect
-
-Session summary showing accomplishments, key decisions, tools used, files touched, model name, and token count.
-
-```bash
-chat-history inspect --last                # most recent session
-chat-history inspect 2df5                  # by partial UUID
-```
-
-### View transcript
-
-```bash
-chat-history view --last                   # full transcript
-chat-history view 2df5 --tools             # include tool call names
-chat-history view --last --plain           # plain text (pipe-friendly)
-```
-
-### Export / Resume / Find
-
-```bash
-chat-history export 2df5 -o session.md     # export as markdown
-chat-history resume 2df5                   # resume Claude Code or Codex session
-chat-history find e912                     # print file path (for scripting)
-```
-
-### Install agent skill
-
-```bash
-chat-history install-skill                 # installs SKILL.md for Claude Code + Cursor + Codex
-```
+- `CC` = Claude Code, `CR` = Cursor, `CX` = Codex
+- `★ N.N` = relevance (higher is better)
+- `[summary]` / `[first_prompt]` / `[branch]` = which index field matched
+- `inspect` → duration, messages, model, tokens, tools, files, accomplishments, key decisions
+- Claude Code titles come from `ai-title` / `custom-title` JSONL when available
+- Subagent/sidechain sessions are omitted unless `--sidechains`; this includes Cursor transcripts under `agent-transcripts/*/subagents/` (tagged `[subagent]`)
+- Codex commentary-phase messages are hidden once a turn has a final answer; interrupted turns keep commentary
 
 ## Data sources
 
-| Source | Path | What it contains |
-|---|---|---|
-| Claude Code JSONL | `~/.claude/projects/*/*.jsonl` | Full conversations, `ai-title` / `custom-title`, cwd, branch, tool calls |
-| Claude Code legacy index | `~/.claude/projects/*/sessions-index.json` | Optional legacy metadata when present |
-| Cursor agent transcripts | `~/.cursor/projects/*/agent-transcripts/` | JSONL or plain-text parent sessions |
-| Cursor subagent transcripts | `~/.cursor/projects/*/agent-transcripts/*/subagents/*.jsonl` | Subagent sessions, hidden unless `--sidechains` |
-| Codex CLI rollouts | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | Full conversations with tool calls (honors `$CODEX_HOME`) |
+| Source | Path |
+|---|---|
+| Claude Code | `~/.claude/projects/*/*.jsonl` (+ optional legacy `sessions-index.json`) |
+| Cursor | `~/.cursor/projects/*/agent-transcripts/` |
+| Cursor subagents | `.../agent-transcripts/*/subagents/*.jsonl` |
+| Codex | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` (default `~/.codex`) |
 
-## Search scoring
+Noise filtered automatically: warmups, handshake fluff, clear-only sessions, structural config dumps. Transcripts capped at 4MB each.
 
-### Index search (default)
+## Search scoring (summary)
 
-Searches loaded session metadata with field-weighted scoring. For modern Claude Code installs this metadata is derived directly from JSONL records (`ai-title`, `custom-title`, first prompt, cwd, and `gitBranch`); `sessions-index.json` is used only when present.
+**Index (default):** field-weighted — summary 3×, first prompt 2×, branch/project 1× — with recency multipliers (3× today / 2× week / 1.5× month). AND across query words.
 
-- **Summary match** — 3x weight
-- **First prompt match** — 2x weight
-- **Branch / project match** — 1x weight
-- **Recency multiplier** — 3x today, 2x this week, 1.5x this month
-- All query words must match (AND logic)
-- Shows which field matched (`[summary]`, `[first_prompt]`, etc.)
-
-### Deep search (`--deep`)
-
-Deep search parses transcript files in parallel using [rayon](https://github.com/rayon-rs/rayon). Snippets show context **around the match**, not the first N characters.
-
-Full transcript scoring combines signals from multiple open-source projects:
-
-- **Core tech term matching** — exact match on framework/tool names (10pts)
-- **Word-level scoring** — exact word boundary match (2pts), substring fallback (1pt)
-- **Supporting terms** — 5+ character non-generic terms (3pts)
-- **Exact phrase bonus** — full query appears verbatim (5pts)
-- **Prefix matching** — `auth` matches `authentication` at word boundaries
-- **Separator normalization** — `_`, `-`, `/` treated as spaces
-- **Recency multiplier** — 3x today, 2x this week, 1.5x this month
-- **Importance boost** — decisions (2.5x) > bugfixes (2x) > features (1.5x)
-- **Semantic boosts** — error queries boost error content (3x), fix queries boost solutions (2.8x)
-- **Content deduplication** — normalized signatures prevent duplicate results
-- **Per-session cap** — max 3 matches per session to prevent domination
-
-## Filtering
-
-The following are automatically filtered out:
-
-- Warmup/handshake messages (`Warmup`, `/clear`)
-- Noise patterns (`"I'm Claude"`, `"ready to help"`, etc.)
-- Clear-only conversations
-- Structural config content (settings listings)
-- Full-text capped at 4MB per conversation to prevent lag
+**Deep (`--deep`):** parallel transcript parse with tech-term boosts, word/prefix/phrase scoring, separator normalization (`_`/`-`/`/` → spaces), importance/semantic boosts, dedup, and a per-session cap of 3 matches.
 
 ## Credits
 
-Search and scoring logic ported from:
-- [claude-historian-mcp](https://github.com/Vvkmnn/claude-historian-mcp) — multi-signal relevance scoring, query similarity, importance heuristics
-- [claude-history](https://github.com/raine/claude-history) — prefix matching, separator normalization, recency multiplier, cwd-based project path resolution
-- [search-sessions](https://github.com/sinzin91/search-sessions) — two-tier index/deep search, field-weighted scoring, natural language dates, per-session cap
+- [claude-historian-mcp](https://github.com/Vvkmnn/claude-historian-mcp) — multi-signal relevance, query similarity, importance heuristics
+- [claude-history](https://github.com/raine/claude-history) — prefix matching, separator normalization, recency, cwd project paths
+- [search-sessions](https://github.com/sinzin91/search-sessions) — two-tier search, field weights, natural-language dates, per-session cap
 - [cursor-history](https://github.com/S2thend/cursor-history) — multi-format Cursor transcript parsing
 
 ## License

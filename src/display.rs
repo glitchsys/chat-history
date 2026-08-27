@@ -27,6 +27,7 @@ macro_rules! c {
                 "bg_blue" => "\x1b[44m",
                 "bg_magenta" => "\x1b[45m",
                 "bg_cyan" => "\x1b[46m",
+                "bg_yellow" => "\x1b[43m",
                 _ => "",
             }
         } else {
@@ -39,13 +40,13 @@ fn src_tag(source: &str) -> String {
     let label = match source {
         "claude" => "claude",
         "codex" => "codex",
-        "cursor" => "cursor",
-        _ => "cursor-agent",
+        "cursor-ide" => "cursor-ide",
+        _ => "cursor",
     };
     let color = match source {
         "claude" => "bg_cyan",
         "codex" => "bg_magenta",
-        "cursor" => "bg_blue",
+        "cursor-ide" => "bg_yellow",
         _ => "bg_blue",
     };
     format!("{}{} {:<12} {}", c!(color), c!("bold"), label, c!("reset"))
@@ -87,8 +88,11 @@ fn dir_label(project: &str) -> String {
     labeled("DIR", &abbreviate_home(project))
 }
 
-fn copies_label(sessions: &[Session], s: &Session) -> String {
-    let n = session::copy_count(sessions, s);
+fn copies_label(counts: &std::collections::HashMap<(String, String), usize>, s: &Session) -> String {
+    let n = counts
+        .get(&(s.source.clone(), s.id.to_ascii_lowercase()))
+        .copied()
+        .unwrap_or(0);
     if n > 1 {
         labeled("COPIES", &n.to_string())
     } else {
@@ -96,31 +100,27 @@ fn copies_label(sessions: &[Session], s: &Session) -> String {
     }
 }
 
+fn copy_counts(sessions: &[Session]) -> std::collections::HashMap<(String, String), usize> {
+    let mut m = std::collections::HashMap::new();
+    for s in sessions {
+        if s.source != "cursor" {
+            continue;
+        }
+        *m.entry((s.source.clone(), s.id.to_ascii_lowercase()))
+            .or_insert(0) += 1;
+    }
+    m
+}
+
 fn print_title_line(title: &str) {
     println!("        {}{}{}", c!("bold"), title, c!("reset"));
 }
 
-/// Dim 8-char session-id chip. IDE (`cursor`) chats aren't CLI-resumable,
-/// so they show a placeholder instead of the composer UUID.
+/// Dim 8-char session-id chip. Every prefix resolves via inspect/view/
+/// export/resume/find.
 fn id_chip(session: &Session) -> String {
-    let short = display_id(&session.source, &session.id);
+    let short: String = session.id.chars().take(8).collect();
     format!("{}{:8}{}", c!("dim"), short, c!("reset"))
-}
-
-fn display_id(source: &str, id: &str) -> String {
-    if source == "cursor" {
-        "00000000".into()
-    } else {
-        id.chars().take(8).collect()
-    }
-}
-
-fn display_full_id(source: &str, id: &str) -> String {
-    if source == "cursor" {
-        "00000000".into()
-    } else {
-        id.to_string()
-    }
 }
 
 /// Best one-line title for a session: summary, else cleaned first prompt.
@@ -147,6 +147,7 @@ pub fn print_list(sessions: &[Session], verbose: bool) {
         sessions.len(),
         c!("reset")
     );
+    let counts = copy_counts(sessions);
     for (i, s) in sessions.iter().enumerate() {
         let tag = src_tag(&s.source);
         let title = title_of(&s.summary, &s.first_prompt, 100);
@@ -172,14 +173,14 @@ pub fn print_list(sessions: &[Session], verbose: bool) {
             c!("reset"),
             id_chip(s),
             dir_label(&s.project),
-            copies_label(sessions, s),
+            copies_label(&counts, s),
             sidechain,
             branch,
             msgs
         );
         print_title_line(&title);
         if verbose {
-            println!("       {}id: {}{}", c!("dim"), display_full_id(&s.source, &s.id), c!("reset"));
+            println!("       {}id: {}{}", c!("dim"), s.id, c!("reset"));
             println!(
                 "       {}file: {}{}",
                 c!("dim"),
@@ -196,6 +197,7 @@ pub fn print_summarized(sessions: &[Session]) {
         println!("{}No sessions found.{}", c!("dim"), c!("reset"));
         return;
     }
+    let counts = copy_counts(sessions);
     let mut by_day: BTreeMap<&str, Vec<&Session>> = BTreeMap::new();
     for s in sessions {
         by_day.entry(&s.date).or_default().push(s);
@@ -225,7 +227,7 @@ pub fn print_summarized(sessions: &[Session]) {
                 src_tag(&s.source),
                 id_chip(s),
                 dir_label(&s.project),
-                copies_label(sessions, s),
+                copies_label(&counts, s),
                 labeled("BRANCH", &s.branch)
             );
             print_title_line(&title);
@@ -396,7 +398,7 @@ pub fn print_inspect(info: &InspectInfo) {
     } else {
         abbreviate_home(&info.project)
     };
-    println!("  {}id: {}{}", c!("dim"), display_full_id(&info.source, &info.session_id), c!("reset"));
+    println!("  {}id: {}{}", c!("dim"), info.session_id, c!("reset"));
     println!(
         "  {}date: {}  cwd: {}  branch: {}{}",
         c!("dim"),
@@ -508,7 +510,7 @@ pub fn print_transcript(messages: &[Message], session: &Session, show_tools: boo
     println!(
         "  {}id: {}  date: {}  branch: {}  cwd: {}{}",
         c!("dim"),
-        display_full_id(&session.source, &session.id),
+        session.id,
         session.date,
         if session.branch.is_empty() {
             "-"
@@ -569,59 +571,26 @@ pub fn print_plain(messages: &[Message]) {
 
 /// IDE Composer chats have no CLI resume. Tell the user how to open it.
 pub fn cursor_ide_resume_hint(session: &Session) -> String {
-    let dir = if session.project.is_empty() {
-        "(unknown directory)".into()
-    } else {
-        abbreviate_home(&session.project)
-    };
     let title = title_of(&session.summary, &session.first_prompt, 100);
+    if session.project.is_empty() {
+        return format!(
+            "You need to use the Cursor IDE UI to find this session.\n\
+             This chat has no recorded workspace directory.\n\
+             IDE chats cannot be resumed from the CLI.\n\
+             \n\
+             Title: {title}\n\
+             Look for it in the Cursor sidebar after opening a related project.\n"
+        );
+    }
+    let dir = abbreviate_home(&session.project);
     format!(
         "You need to use the Cursor IDE UI in the directory {dir} to find this session.\n\
          IDE chats cannot be resumed from the CLI.\n\
          \n\
          Title: {title}\n\
-         Open that folder in Cursor and look for the chat in the sidebar.\n"
-    )
-}
-
-pub fn is_ide_placeholder_id(sid: &str) -> bool {
-    let s = sid.trim();
-    s == "00000000" || s == "000000"
-}
-
-/// `resume 00000000` — the list placeholder is shared by every IDE chat.
-pub fn cursor_ide_placeholder_resume_hint(ide_sessions: &[Session]) -> String {
-    if ide_sessions.len() == 1 {
-        return cursor_ide_resume_hint(&ide_sessions[0]);
-    }
-    let mut dirs: Vec<String> = ide_sessions
-        .iter()
-        .map(|s| {
-            if s.project.is_empty() {
-                "(unknown directory)".into()
-            } else {
-                abbreviate_home(&s.project)
-            }
-        })
-        .collect();
-    dirs.sort();
-    dirs.dedup();
-    if dirs.is_empty() {
-        return "You need to use the Cursor IDE UI in the original workspace directory to find this session.\n\
-                IDE chats (shown as 00000000) cannot be resumed from the CLI.\n"
-            .into();
-    }
-    let listed = dirs
-        .iter()
-        .map(|d| format!("  {d}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "You need to use the Cursor IDE UI in the original directory to find this session.\n\
-         IDE chats (shown as 00000000) cannot be resumed from the CLI.\n\
-         \n\
-         Open Cursor in one of these folders and look for the chat in the sidebar:\n\
-         {listed}\n"
+         Session ID: {}\n\
+         Open that folder in Cursor and look for the chat in the sidebar.\n",
+        session.id
     )
 }
 
@@ -653,7 +622,7 @@ pub fn export_transcript(messages: &[Message], session: &Session, out_path: Opti
     ));
     lines.push(format!(
         "- **Session ID:** {}\n\n---\n",
-        display_full_id(&session.source, &session.id)
+        session.id
     ));
     for msg in messages {
         let role = if msg.role == "user" {
@@ -696,9 +665,9 @@ mod tests {
     use crate::session::Session;
 
     #[test]
-    fn ide_resume_hint_includes_directory_not_composer_id() {
+    fn ide_resume_hint_includes_directory() {
         let session = Session {
-            source: "cursor".into(),
+            source: "cursor-ide".into(),
             id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
             summary: "git branch analysis".into(),
             first_prompt: String::new(),
@@ -712,7 +681,7 @@ mod tests {
             is_sidechain: false,
         };
         let hint = cursor_ide_resume_hint(&session);
-        assert!(!hint.contains("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
+        assert!(hint.contains("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
         assert!(hint.contains("Cursor IDE UI"));
         assert!(hint.contains("/home/alice/src/myapp") || hint.contains("myapp"));
         assert!(hint.contains("git branch analysis"));
@@ -720,41 +689,24 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_id_matches_display_chip() {
-        assert!(super::is_ide_placeholder_id("00000000"));
-        assert!(super::is_ide_placeholder_id("000000"));
-        assert!(super::is_ide_placeholder_id("  00000000  "));
-        assert!(!super::is_ide_placeholder_id("aaaaaaaa"));
-    }
-
-    #[test]
-    fn placeholder_resume_hint_lists_directories() {
-        let a = Session {
-            source: "cursor".into(),
+    fn ide_resume_hint_omits_unknown_directory() {
+        let session = Session {
+            source: "cursor-ide".into(),
             id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
-            summary: "fix the widget layout".into(),
+            summary: "untitled".into(),
             first_prompt: String::new(),
             created: String::new(),
             modified: String::new(),
-            date: "2026-08-01".into(),
-            messages: 0,
+            date: "2026-08-26".into(),
+            messages: 1,
             branch: String::new(),
-            project: "/home/alice/src/myapp".into(),
+            project: String::new(),
             file: String::new(),
             is_sidechain: false,
         };
-        let mut b = a.clone();
-        b.project = "/home/alice/src/other".into();
-        let hint = super::cursor_ide_placeholder_resume_hint(&[a, b]);
-        assert!(hint.contains("Cursor IDE UI"));
-        assert!(hint.contains("myapp"));
-        assert!(hint.contains("other"));
-    }
-
-    #[test]
-    fn ide_display_id_is_placeholder() {
-        assert_eq!(super::display_id("cursor", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), "00000000");
-        assert_eq!(super::display_id("cursor-agent", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), "aaaaaaaa");
+        let hint = cursor_ide_resume_hint(&session);
+        assert!(!hint.contains("(unknown directory)"));
+        assert!(hint.contains("no recorded workspace"));
     }
 
     #[test]

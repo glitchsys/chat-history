@@ -84,7 +84,7 @@ These filters apply to session listing, `search`, and `--last` selection. Explic
 
 ```bash
 # Listing / search / --last filters
-chat-history --source claude              # claude | cursor | cursor-agent | codex
+chat-history --source claude              # claude | cursor | cursor-agent | cursor-ide | codex
 chat-history --project chat-history
 chat-history --branch feature-xyz
 chat-history --from "3 days ago" --to today
@@ -106,7 +106,7 @@ Date formats: `YYYY-MM-DD`, `today`, `yesterday`, `"3 days ago"`, `"last week"`,
 |---|---|
 | `--deep` | Force full transcript search for the default `all` scope. Specialized scopes already scan transcript content. Snippets are match-centered, not message prefixes. |
 | `--json` | Machine-readable search output. This flag is available on `search`, not `inspect` or `view`. |
-| (default index) | Fast metadata-only search (title/summary, first prompt, branch, project). Weak results (★ < 5.0) fall through to deep search automatically. |
+| (default index) | Fast metadata-only search (title/summary, first prompt, branch, project). Weak results (★ < 5.0) fall through to deep search, except curated summary/title hits at ★ 4.5+. |
 
 All JSON output uses a `{ "query", "count", "results" }` envelope. Deep-search result items include `session_id`, `source`, `date`, `summary`, `project`, `score`, `role`, `snippet`, `tools`, and `files`. Index result items include `matched_field` instead of `role`, `tools`, and `files`, and the envelope includes `"search_type": "index"`.
 
@@ -116,7 +116,7 @@ Human-readable results include an 8-char UUID prefix (e.g. `[e363d98d]`) — pas
 
 ### Interpreting output
 
-- `claude` = Claude Code, `agent` = Cursor Agent, `codex` = Codex
+- `claude` = Claude Code, `cursor` = Cursor Agent transcripts, `cursor-ide` = Cursor IDE SQLite, `codex` = Codex (`cursor-agent` is an alias for `cursor`)
 - Header line: source, date, short id, score, `DIR:` spawn directory (`$HOME` shown as `~`), and (index search) `INDEX_FIELD:`
 - Title / match text is on the following indented line
 - `★ N.N` = relevance (higher is better)
@@ -131,7 +131,8 @@ Human-readable results include an 8-char UUID prefix (e.g. `[e363d98d]`) — pas
 | Source | Path |
 |---|---|
 | Claude Code | `~/.claude/projects/*/*.jsonl` (+ optional legacy `sessions-index.json`) |
-| Cursor | `~/.cursor/projects/*/agent-transcripts/` |
+| Cursor Agent | `~/.cursor/projects/*/agent-transcripts/` (`--source cursor`, alias `cursor-agent`) |
+| Cursor IDE | `.../Cursor/User/globalStorage/state.vscdb` (override with `CURSOR_USER_DIR`; `--source cursor-ide`) |
 | Cursor subagents | `.../agent-transcripts/*/subagents/*.jsonl` |
 | Codex | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` (default `~/.codex`) |
 

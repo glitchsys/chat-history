@@ -1,6 +1,6 @@
 use chat_history::dates::parse_human_date;
 use chat_history::session::{
-    self, SessionLookup, filter_sessions, load_all_sessions, lookup_session, parse_session,
+    self, ResumeAction, SessionLookup, filter_sessions, load_sessions, lookup_session, parse_session,
     session_copies,
 };
 use chat_history::skill_install::{ensure_skills, install_skill};
@@ -41,7 +41,7 @@ struct Cli {
     #[arg(
         long,
         global = true,
-        value_parser = ["claude", "cursor", "cursor-agent", "codex"],
+        value_parser = ["claude", "cursor", "cursor-agent", "cursor-ide", "codex"],
         help = "Filter by source"
     )]
     source: Option<String>,
@@ -164,7 +164,7 @@ fn resolve_session_or_exit<'a>(
             let copies = session_copies(sessions, s);
             if copies.len() > 1 {
                 eprintln!(
-                    "Note: session {} is stored in {} Cursor/project folders; using DIR: {}",
+                    "Note: session {} is stored in {} project folders; using DIR: {}",
                     s.id,
                     copies.len(),
                     display::abbreviate_home(&s.project)
@@ -250,7 +250,24 @@ fn main() {
     // upgrades). Never overwrites user-edited skills.
     ensure_skills();
 
-    let mut sessions = load_all_sessions();
+    let id_lookup = matches!(
+        &cli.command,
+        Some(Commands::Inspect {
+            session_id: Some(_),
+            last: false
+        }) | Some(Commands::View {
+            session_id: Some(_),
+            last: false,
+            ..
+        }) | Some(Commands::Export { .. })
+            | Some(Commands::Resume { .. })
+            | Some(Commands::Find { .. })
+    );
+    let mut sessions = if id_lookup {
+        load_sessions(None)
+    } else {
+        load_sessions(cli.source.as_deref())
+    };
     if !cli.sidechains {
         sessions.retain(|s| !s.is_sidechain);
     }
@@ -374,26 +391,29 @@ fn main() {
             }
         }
         Some(Commands::Resume { session_id }) => {
-            if display::is_ide_placeholder_id(&session_id) {
-                let ide: Vec<session::Session> = filtered
-                    .iter()
-                    .filter(|s| s.source == "cursor")
-                    .cloned()
-                    .collect();
-                print!("{}", display::cursor_ide_placeholder_resume_hint(&ide));
-                std::process::exit(1);
-            }
             let session = resolve_session_or_exit(&sessions, &session_id);
-            if session.source == "cursor" {
+            if session.source == "cursor-ide" {
                 print!("{}", display::cursor_ide_resume_hint(session));
                 std::process::exit(1);
             }
-            let Some((bin, args)) = session::resume_command(session) else {
+            let action = match session::resume_command(session) {
+                Some(a) => a,
+                None => {
+                    eprintln!(
+                        "Resume is not supported for {} sessions.",
+                        session.source
+                    );
+                    std::process::exit(1);
+                }
+            };
+            if let ResumeAction::Print { cmdline } = action {
                 eprintln!(
-                    "Resume is not supported for {} sessions.",
-                    session.source
+                    "Not running `cursor agent` (it can install the Agent CLI). Run:\n  {cmdline}"
                 );
                 std::process::exit(1);
+            }
+            let ResumeAction::Exec { bin, args } = action else {
+                unreachable!();
             };
             println!(
                 "Resuming: {}",
@@ -426,10 +446,9 @@ fn main() {
                     }
                 } else {
                     eprintln!(
-                        "Cannot resume: session directory does not exist: {}",
+                        "Warning: session directory {} no longer exists; resuming from the current directory",
                         display::abbreviate_home(&session.project)
                     );
-                    std::process::exit(1);
                 }
             }
             use std::os::unix::process::CommandExt;

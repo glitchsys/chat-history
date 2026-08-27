@@ -124,12 +124,10 @@ pub fn index_quality_ok(results: &[IndexResult]) -> bool {
     let Some(best) = results.first() else {
         return false;
     };
-    // Recency damping turns a title hit into 3.0 * 1.5 = 4.5 (under 5.0) for
-    // chats from last month. Those are still the names shown in the IDE.
-    if best.matched_field == "summary" || best.matched_field == "first_prompt" {
-        return true;
+    match best.matched_field.as_str() {
+        "summary" => best.score >= 4.5,
+        _ => best.score >= INDEX_QUALITY_THRESHOLD,
     }
-    best.score >= INDEX_QUALITY_THRESHOLD
 }
 
 fn parse_timeframe_duration(tf: &str) -> chrono::Duration {
@@ -249,17 +247,17 @@ pub fn scored_search(
         .filter(|s| !s.file.is_empty() && std::path::Path::new(&s.file).exists())
         .flat_map(|s| {
             let (mut messages, _) = parse_session(s, false);
-            let title = if !s.summary.is_empty() {
-                s.summary.clone()
-            } else {
-                s.first_prompt.clone()
-            };
+            let title = s.summary.clone();
             if !title.is_empty() && !messages.iter().any(|m| m.content == title) {
                 messages.insert(
                     0,
                     Message {
                         uuid: "index-title".into(),
-                        timestamp: String::new(),
+                        timestamp: if s.modified.is_empty() {
+                            s.created.clone()
+                        } else {
+                            s.modified.clone()
+                        },
                         role: "user".into(),
                         content: title,
                         session_id: s.id.clone(),
@@ -639,6 +637,28 @@ mod tests {
     }
 
     #[test]
+    fn index_quality_old_summary_falls_through() {
+        let results = vec![IndexResult {
+            session: make_session("1", "stale title", "", "proj", "main"),
+            score: 3.0,
+            matched_field: "summary".into(),
+            display: "stale title".into(),
+        }];
+        assert!(!index_quality_ok(&results));
+    }
+
+    #[test]
+    fn index_quality_first_prompt_keeps_five_floor() {
+        let results = vec![IndexResult {
+            session: make_session("1", "", "first prompt text", "proj", "main"),
+            score: 4.5,
+            matched_field: "first_prompt".into(),
+            display: "first prompt text".into(),
+        }];
+        assert!(!index_quality_ok(&results));
+    }
+
+    #[test]
     fn index_quality_ok_empty() {
         assert!(!index_quality_ok(&[]));
     }
@@ -700,7 +720,9 @@ mod tests {
             "main",
         );
         s.file = tmp.path().to_str().unwrap().to_string();
-        let results = scored_search(&[s], "mergeability", "all", 10, None);
+        s.created = "2026-08-20T00:00:00Z".into();
+        s.modified = s.created.clone();
+        let results = scored_search(&[s.clone()], "mergeability", "all", 10, None);
         assert!(
             results
                 .iter()
@@ -710,6 +732,13 @@ mod tests {
                 .iter()
                 .map(|r| r.message.content.clone())
                 .collect::<Vec<_>>()
+        );
+        let recent = scored_search(&[s.clone()], "mergeability", "all", 10, Some("30d"));
+        assert!(
+            recent
+                .iter()
+                .any(|r| r.message.content.contains("mergeability")),
+            "title-only hit should survive a covering timeframe"
         );
     }
 }

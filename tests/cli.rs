@@ -88,8 +88,7 @@ fn resume_placeholder_id_points_at_ide_ui() {
     cmd.args(["resume", "00000000"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("Cursor IDE UI"))
-        .stdout(predicate::str::contains("00000000"));
+        .stderr(predicate::str::contains("Session not found"));
 }
 
 #[test]
@@ -333,7 +332,8 @@ fn invalid_source_fails_with_usage_error() {
         .failure()
         .code(2)
         .stderr(predicate::str::contains("possible values"))
-        .stderr(predicate::str::contains("claude"));
+        .stderr(predicate::str::contains("claude"))
+        .stderr(predicate::str::contains("cursor-ide"));
 }
 
 #[test]
@@ -683,6 +683,23 @@ fn filter_by_source_flag() {
         .assert()
         .success()
         .stdout(predicate::str::contains("No sessions found"));
+}
+
+#[test]
+fn source_cursor_and_alias_list_agent_transcripts() {
+    let tmp = TempDir::new().unwrap();
+    setup_cursor_fixture(&tmp);
+    for src in ["cursor", "cursor-agent"] {
+        Command::cargo_bin("chat-history")
+            .unwrap()
+            .args(["--source", src])
+            .env("HOME", tmp.path())
+            .env("CLAUDE_CONFIG_DIR", tmp.path())
+            .env("NO_COLOR", "1")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("refactor the database module"));
+    }
 }
 
 #[test]
@@ -1818,7 +1835,7 @@ fn cursor_sessions_listed() {
         "should show cursor session's first prompt"
     );
     assert!(
-        stdout.contains("cursor-agent"),
+        stdout.contains("cursor"),
         "should show agent tag for cursor sessions"
     );
     assert!(
@@ -2146,7 +2163,7 @@ fn mixed_sources_both_listed() {
         "should show Claude sessions with claude tag"
     );
     assert!(
-        stdout.contains("cursor-agent"),
+        stdout.contains("cursor"),
         "should show Cursor sessions with agent tag"
     );
     assert!(

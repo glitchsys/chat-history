@@ -50,7 +50,7 @@ Search, inspect, and export Claude Code, Cursor, and Codex conversation history.
 chat-history                                      # newest first; short IDs on every row (-v for full IDs + paths)
 chat-history --from yesterday --to yesterday -s   # a specific day, grouped
 chat-history --from "3 days ago"                  # natural-language dates
-chat-history --source claude                      # claude | cursor | cursor-agent | codex
+chat-history --source claude                      # claude | cursor | cursor-agent | cursor-ide | codex
 chat-history -L                                   # current workspace only
 chat-history --branch feature-xyz -k "auth" -v    # branch / keyword filters
 
@@ -75,7 +75,7 @@ chat-history completions zsh               # shell completions (bash/zsh/fish/el
 
 ## Interpreting output
 
-- `claude` = Claude Code, `cursor` = Cursor IDE (Chat/Ask, SQLite), `cursor-agent` = Cursor Agent transcripts, `codex` = Codex; `★ N.N` = relevance score.
-- Header line has `DIR:` (spawn directory) and, for index search, `INDEX_FIELD:` (`summary` / `first_prompt` / `branch`). Title is on the next line. Cursor IDE rows show `00000000` instead of a session id; `resume 00000000` explains how to open the chat in the Cursor IDE UI.
-- `COPIES: N` means the same session id exists in more than one Cursor project folder; `inspect`/`resume`/`find` pick one copy (cwd match, else newest) and print the others.
+- `claude` = Claude Code, `cursor` = Cursor Agent transcripts, `cursor-ide` = Cursor IDE SQLite, `codex` = Codex; `★ N.N` = relevance score. `--source cursor-agent` is an alias for `cursor`.
+- Header line has `DIR:` (spawn directory) and, for index search, `INDEX_FIELD:` (`summary` / `first_prompt` / `branch`). Title is on the next line. Every displayed short ID can be passed to `inspect` / `view` / `export` / `find`. `resume` on `cursor-ide` rows prints how to open the chat in the Cursor UI.
+- `COPIES: N` means the same Cursor Agent session id exists in more than one project folder; `inspect`/`resume`/`find` pick one copy (cwd match, else newest) and print the others.
 - Accepted dates: `YYYY-MM-DD`, `today`, `yesterday`, `"3 days ago"`, `"last week"`, `"last month"`.

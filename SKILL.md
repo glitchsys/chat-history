@@ -27,7 +27,7 @@ Search, inspect, and export Claude Code, Cursor, and Codex conversation history.
 
 1. `chat-history --from yesterday --to yesterday` — every row shows a short session ID; `-s` groups by day for multi-day overviews.
    - `--from X` alone means **X through today**. Always pair with `--to` when the user means a specific day.
-   - Short IDs work everywhere a session ID is accepted (`inspect`, `view`, `resume`, `find`); `-v` adds full IDs and file paths.
+   - Short IDs on `claude` / `codex` / `cursor-agent` rows work with `inspect`, `view`, `resume`, `find`. `cursor-ide` rows hide the id (`--------`); do **not** `resume` them — tell the user the **title** and `DIR:` and to open that folder in Cursor and pick the chat in the sidebar. `-v` / `--json` still have the full id for `inspect` / `view` / `find`.
 2. `chat-history inspect <id>` for accomplishments, tools, files touched.
 
 ## Choosing the best hit
@@ -40,7 +40,8 @@ Search, inspect, and export Claude Code, Cursor, and Codex conversation history.
 
 - Only `search` accepts `--json`; the session list and `inspect` reject it.
 - The only subcommands are `search`, `inspect`, `view`, `export`, `resume`, `find`, `install-skill`, `completions`. Do not guess others; run `chat-history --help` when unsure.
-- Don't dump raw JSON or full transcripts at the user — summarize, cite the session ID and date.
+- Don't dump raw JSON or full transcripts at the user — summarize, cite the session ID and date (or title + directory for `cursor-ide`).
+- Do not `resume` a session whose human tag is `cursor-ide`. `--json` may still report `"source": "cursor"` for IDE Agent chats that also have a jsonl; `resume` will print a sidebar hint instead of launching the Agent CLI.
 - Some Cursor sessions have thin metadata (`(no summary)`, `duration: 0min`, raw first-message titles). If `inspect` is thin, fall back to `chat-history view <id> --plain`.
 
 ## Commands
@@ -65,7 +66,7 @@ chat-history inspect --last                # accomplishments, tools, model, toke
 chat-history inspect <partial-uuid>
 chat-history view <id> --plain             # transcript, pipe-friendly (--tools for tool names)
 chat-history export <id> -o session.md
-chat-history resume <id>                   # resume a Claude Code, Cursor Agent, or Codex session
+chat-history resume <id>                   # Claude Code, Cursor Agent CLI, or Codex — not IDE sidebar
 chat-history find <id>                     # print transcript file path for scripting
 chat-history completions zsh               # shell completions (bash/zsh/fish/elvish/powershell)
 ```
@@ -75,7 +76,7 @@ chat-history completions zsh               # shell completions (bash/zsh/fish/el
 
 ## Interpreting output
 
-- Display tags: `claude` = Claude Code, `cursor-ide` = Cursor IDE sidebar (SQLite; IDE Agent chats also write a jsonl under `agent-transcripts/` with the same id), `cursor-agent` = Cursor Agent CLI / transcript-only jsonl, `codex` = Codex; `★ N.N` = relevance score.
-- Header line has `DIR:` (spawn directory) and, for index search, `INDEX_FIELD:` (`summary` / `first_prompt` / `branch`). Title is on the next line. Claude/Codex/`cursor-agent` short IDs can be passed to `inspect` / `view` / `export` / `find` / `resume`. Rows tagged `cursor-ide` hide the composer UUID and **cannot** be `resume`d from the CLI (prints how to find the chat in the Cursor sidebar), even when an `agent-transcripts` jsonl exists for the same id. `list -v` / JSON still have the id for `inspect` / `view` / `find`.
+- Display tags: `claude` = Claude Code, `cursor-ide` = Cursor IDE sidebar (SQLite; IDE Agent also writes jsonl with the same id — still listed once as `cursor-ide`), `cursor-agent` = Agent CLI / jsonl-only, `codex` = Codex; `★ N.N` = relevance score. `--source cursor` / `cursor-agent` = jsonl store; `--source cursor-ide` = SQLite.
+- Header line has `DIR:` (spawn directory) and, for index search, `INDEX_FIELD:` (`summary` / `first_prompt` / `branch`). Title is on the next line. Pass Claude/Codex/`cursor-agent` short IDs to `inspect` / `view` / `export` / `find` / `resume`. `cursor-ide` rows show `--------`; find them in the sidebar by title + `DIR:`. `list -v` / JSON still have the id.
 - `COPIES: N` means the same Cursor Agent session id exists in more than one project folder; `inspect`/`resume`/`find` pick one copy (cwd match, else newest) and print the others.
 - Accepted dates: `YYYY-MM-DD`, `today`, `yesterday`, `"3 days ago"`, `"last week"`, `"last month"`.

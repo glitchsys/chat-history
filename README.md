@@ -69,7 +69,7 @@ chat-history inspect <partial-uuid>
 chat-history view --last --plain
 chat-history view <id> --tools
 chat-history export <id> -o session.md
-chat-history resume <id>                  # Claude Code, Cursor Agent, or Codex
+chat-history resume <id>                  # Claude / Agent CLI / Codex — not cursor-ide
 chat-history find <id>                    # absolute path for further tooling
 
 # Shell completions (bash, zsh, fish, elvish, powershell)
@@ -85,6 +85,7 @@ These filters apply to session listing, `search`, and `--last` selection. Explic
 ```bash
 # Listing / search / --last filters
 chat-history --source claude              # claude | cursor | cursor-agent | cursor-ide | codex
+                                          # cursor = cursor-agent = jsonl; cursor-ide = sidebar
 chat-history --project chat-history
 chat-history --branch feature-xyz
 chat-history --from "3 days ago" --to today
@@ -112,12 +113,24 @@ All JSON output uses a `{ "query", "count", "results" }` envelope. Deep-search r
 
 Scopes: `all` (default), `errors`, `similar`, `tools`, `files`. Use `--timeframe today|week|month|Nd` and `--limit N` (default 15) to constrain results.
 
-Human-readable Claude/Codex/`cursor-agent` results include an 8-char UUID prefix — pass that to `inspect`, `view`, `export`, `resume`, or `find`. Rows tagged `cursor-ide` omit that prefix and cannot be resumed from the CLI.
+Human-readable Claude/Codex/`cursor-agent` results include an 8-char UUID prefix — pass that to `inspect`, `view`, `export`, `resume`, or `find`. Rows tagged `cursor-ide` show `--------` instead; find them in the Cursor sidebar by **title** and `DIR:`. `resume` on those ids prints that hint and does not start the Agent CLI.
+
+Example (index search, not `--json`):
+
+```
+  1.  cursor-ide    2026-07-30 -------- ★ 7.5 DIR: ~/proj INDEX_FIELD: summary
+        Restore optimization
+  2.  cursor-agent  2026-08-20 2f5bb25d ★ 4.0 DIR: ~/tmp INDEX_FIELD: first_prompt
+        Please read over the setup guide…
+```
+
+`--json` still includes `session_id`. For IDE Agent chats the JSON `source` is `cursor` (the jsonl store) even though the human tag is `cursor-ide`; `resume` still refuses those.
 
 ### Interpreting output
 
-- Display tags: `claude` = Claude Code, `cursor-ide` = Cursor IDE sidebar (Agent-mode chats in the IDE are still `cursor-ide`; they also have a jsonl on disk), `cursor-agent` = Agent CLI / jsonl-only, `codex` = Codex (`--source cursor-agent` still means jsonl transcripts)
-- Header line: source, date, short id (or `--------` for IDE-only composers), score, `DIR:` spawn directory (`$HOME` shown as `~`), and (index search) `INDEX_FIELD:`
+- Display tags: `claude` = Claude Code, `cursor-ide` = Cursor IDE sidebar, `cursor-agent` = Agent CLI / jsonl-only, `codex` = Codex
+- Cursor IDE **Agent mode** writes SQLite **and** a jsonl with the same composer id. Search lists that pair **once** as `cursor-ide`. `--source cursor` / `cursor-agent` is the jsonl store; `--source cursor-ide` is SQLite.
+- Header line: source, date, short id (or `--------` for `cursor-ide`), score, `DIR:` spawn directory (`$HOME` shown as `~`), and (index search) `INDEX_FIELD:`
 - Title / match text is on the following indented line
 - `★ N.N` = relevance (higher is better)
 - `INDEX_FIELD:` is `summary`, `first_prompt`, or `branch`
@@ -132,7 +145,7 @@ Human-readable Claude/Codex/`cursor-agent` results include an 8-char UUID prefix
 |---|---|
 | Claude Code | `~/.claude/projects/*/*.jsonl` (+ optional legacy `sessions-index.json`) |
 | Cursor Agent | `~/.cursor/projects/*/agent-transcripts/` (`--source cursor`, alias `cursor-agent`) |
-| Cursor IDE | `.../Cursor/User/globalStorage/state.vscdb` (override with `CURSOR_USER_DIR`; `--source cursor-ide`) |
+| Cursor IDE | `.../Cursor/User/globalStorage/state.vscdb` (override with `CURSOR_USER_DIR`; `--source cursor-ide`). IDE Agent chats also get a jsonl in the Agent path above; they still list as `cursor-ide`. |
 | Cursor subagents | `.../agent-transcripts/*/subagents/*.jsonl` |
 | Codex | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` (default `~/.codex`) |
 

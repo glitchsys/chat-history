@@ -12,13 +12,15 @@ use clap::{Parser, Subcommand};
     name = "chat-history",
     about = "Search Claude Code + Cursor + Codex conversation history",
     long_about = "Search Claude Code + Cursor + Codex conversation history.\n\n\
-        With no command, lists sessions newest first; every row shows a short\n\
-        session ID usable with inspect/view/export/resume/find.",
+        With no command, lists sessions newest first. Claude, Codex, and\n\
+        cursor-agent rows show a short ID for inspect/view/export/resume/find.\n\
+        cursor-ide rows hide that ID and cannot be resumed from the CLI.",
     version,
     after_help = "EXAMPLES:\n  \
         chat-history                                  list sessions, newest first\n  \
         chat-history --from yesterday --to yesterday  sessions from a specific day\n  \
         chat-history search \"auth error\" --deep --json\n  \
+        chat-history --source cursor-ide              IDE sidebar chats only\n  \
         chat-history inspect 6b1094cd                 summarize by short ID\n  \
         chat-history view 6b1094cd --plain | less\n\n\
         EXIT CODES:\n  \
@@ -129,7 +131,7 @@ enum Commands {
         #[arg(short = 'o', long)]
         output: Option<String>,
     },
-    /// Resume a Claude Code, Cursor Agent, or Codex session in its original tool
+    /// Resume Claude Code, Cursor Agent CLI, or Codex (not Cursor IDE sidebar chats)
     Resume {
         /// Session ID or unique prefix
         session_id: String,

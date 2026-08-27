@@ -259,6 +259,7 @@ fn first_user_text(conn: &Connection, composer_id: &str) -> String {
         project: String::new(),
         file: String::new(),
         is_sidechain: false,
+        also_ide: false,
     };
     load_bubbles_as_messages(conn, &stub)
         .into_iter()
@@ -382,6 +383,7 @@ fn load_cursor_ide_sessions_from(db: &Path) -> Vec<Session> {
             project: workspace_path(&meta),
             file: file.clone(),
             is_sidechain,
+            also_ide: false,
         });
     }
     sessions
@@ -548,6 +550,7 @@ mod tests {
             project: String::new(),
             file: db.to_string_lossy().into(),
             is_sidechain: false,
+            also_ide: false,
         };
         let msgs = parse_cursor_ide(&session);
         assert_eq!(msgs[0].role, "user");
@@ -603,6 +606,7 @@ mod tests {
             project: String::new(),
             file: db.to_string_lossy().into(),
             is_sidechain: false,
+            also_ide: false,
         };
         let msgs = parse_cursor_ide(&session);
         assert_eq!(msgs.len(), 3);

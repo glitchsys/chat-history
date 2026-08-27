@@ -112,12 +112,12 @@ All JSON output uses a `{ "query", "count", "results" }` envelope. Deep-search r
 
 Scopes: `all` (default), `errors`, `similar`, `tools`, `files`. Use `--timeframe today|week|month|Nd` and `--limit N` (default 15) to constrain results.
 
-Human-readable results include an 8-char UUID prefix (e.g. `[e363d98d]`) — pass that to `inspect`, `view`, `export`, `resume`, or `find`.
+Human-readable Claude/Codex/`cursor-agent` results include an 8-char UUID prefix — pass that to `inspect`, `view`, `export`, `resume`, or `find`. Rows tagged `cursor-ide` omit that prefix and cannot be resumed from the CLI.
 
 ### Interpreting output
 
-- `claude` = Claude Code, `cursor` = Cursor Agent transcripts, `cursor-ide` = Cursor IDE SQLite, `codex` = Codex (`cursor-agent` is an alias for `cursor`)
-- Header line: source, date, short id, score, `DIR:` spawn directory (`$HOME` shown as `~`), and (index search) `INDEX_FIELD:`
+- Display tags: `claude` = Claude Code, `cursor-ide` = Cursor IDE sidebar (Agent-mode chats in the IDE are still `cursor-ide`; they also have a jsonl on disk), `cursor-agent` = Agent CLI / jsonl-only, `codex` = Codex (`--source cursor-agent` still means jsonl transcripts)
+- Header line: source, date, short id (or `--------` for IDE-only composers), score, `DIR:` spawn directory (`$HOME` shown as `~`), and (index search) `INDEX_FIELD:`
 - Title / match text is on the following indented line
 - `★ N.N` = relevance (higher is better)
 - `INDEX_FIELD:` is `summary`, `first_prompt`, or `branch`

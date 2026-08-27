@@ -392,7 +392,7 @@ fn main() {
         }
         Some(Commands::Resume { session_id }) => {
             let session = resolve_session_or_exit(&sessions, &session_id);
-            if session.source == "cursor-ide" {
+            if session.is_ide_ui() {
                 print!("{}", display::cursor_ide_resume_hint(session));
                 std::process::exit(1);
             }

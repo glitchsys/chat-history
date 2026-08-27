@@ -75,7 +75,7 @@ chat-history completions zsh               # shell completions (bash/zsh/fish/el
 
 ## Interpreting output
 
-- `claude` = Claude Code, `cursor` = Cursor Agent transcripts, `cursor-ide` = Cursor IDE SQLite, `codex` = Codex; `★ N.N` = relevance score. `--source cursor-agent` is an alias for `cursor`.
-- Header line has `DIR:` (spawn directory) and, for index search, `INDEX_FIELD:` (`summary` / `first_prompt` / `branch`). Title is on the next line. Every displayed short ID can be passed to `inspect` / `view` / `export` / `find`. `resume` on `cursor-ide` rows prints how to open the chat in the Cursor UI.
+- Display tags: `claude` = Claude Code, `cursor-ide` = Cursor IDE sidebar (SQLite; IDE Agent chats also write a jsonl under `agent-transcripts/` with the same id), `cursor-agent` = Cursor Agent CLI / transcript-only jsonl, `codex` = Codex; `★ N.N` = relevance score.
+- Header line has `DIR:` (spawn directory) and, for index search, `INDEX_FIELD:` (`summary` / `first_prompt` / `branch`). Title is on the next line. Claude/Codex/`cursor-agent` short IDs can be passed to `inspect` / `view` / `export` / `find` / `resume`. Rows tagged `cursor-ide` hide the composer UUID and **cannot** be `resume`d from the CLI (prints how to find the chat in the Cursor sidebar), even when an `agent-transcripts` jsonl exists for the same id. `list -v` / JSON still have the id for `inspect` / `view` / `find`.
 - `COPIES: N` means the same Cursor Agent session id exists in more than one project folder; `inspect`/`resume`/`find` pick one copy (cwd match, else newest) and print the others.
 - Accepted dates: `YYYY-MM-DD`, `today`, `yesterday`, `"3 days ago"`, `"last week"`, `"last month"`.

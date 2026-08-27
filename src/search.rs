@@ -482,6 +482,7 @@ mod tests {
             project: project.into(),
             file: String::new(),
             is_sidechain: false,
+            also_ide: false,
         }
     }
 

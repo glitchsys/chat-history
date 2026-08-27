@@ -24,6 +24,16 @@ pub struct Session {
     pub project: String,
     pub file: String,
     pub is_sidechain: bool,
+    /// Same composer id also exists in Cursor IDE SQLite (sidebar chat).
+    pub also_ide: bool,
+}
+
+impl Session {
+    /// Listed as `cursor-ide`: SQLite-only composers, or IDE Agent chats that
+    /// also have an `agent-transcripts` jsonl with the same id.
+    pub fn is_ide_ui(&self) -> bool {
+        self.source == "cursor-ide" || self.also_ide
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -513,6 +523,7 @@ pub fn load_claude_sessions() -> Vec<Session> {
                 project: entry.project_path,
                 file: entry.full_path,
                 is_sidechain: entry.is_sidechain,
+                also_ide: false,
             });
         }
     }
@@ -561,6 +572,7 @@ pub fn load_claude_sessions() -> Vec<Session> {
                         project,
                         file: path.to_string_lossy().to_string(),
                         is_sidechain: false,
+                        also_ide: false,
                     });
                 }
             }
@@ -688,6 +700,7 @@ pub fn load_cursor_sessions() -> Vec<Session> {
                             project: project.clone(),
                             file,
                             is_sidechain: false,
+                            also_ide: false,
                         });
                     } else if path.is_dir() {
                         let dirname = path
@@ -728,6 +741,7 @@ pub fn load_cursor_sessions() -> Vec<Session> {
                             project: project.clone(),
                             file: subagent_path.to_string_lossy().to_string(),
                             is_sidechain: true,
+                            also_ide: false,
                         });
                     }
                 }
@@ -754,6 +768,7 @@ pub fn load_cursor_sessions() -> Vec<Session> {
                     project: project.clone(),
                     file: jf.to_string_lossy().to_string(),
                     is_sidechain: false,
+                    also_ide: false,
                 });
             }
         }
@@ -905,6 +920,7 @@ pub fn load_codex_sessions() -> Vec<Session> {
             project: meta.cwd,
             file: path.to_string_lossy().to_string(),
             is_sidechain: false,
+            also_ide: false,
         });
     }
     sessions
@@ -953,6 +969,7 @@ pub fn load_sessions(source: Option<&str>) -> Vec<Session> {
 
 /// Overlay IDE sidebar titles/paths onto every Agent copy of that id.
 /// Keep an IDE-only row only when it has bubbles and no Agent transcript.
+/// Matching pairs are one Agent row (`also_ide`) so search does not duplicate.
 pub fn merge_cursor_sessions(agents: Vec<Session>, ide: Vec<Session>) -> Vec<Session> {
     let mut agents = agents;
     let mut agent_indexes: HashMap<String, Vec<usize>> = HashMap::new();
@@ -967,6 +984,7 @@ pub fn merge_cursor_sessions(agents: Vec<Session>, ide: Vec<Session>) -> Vec<Ses
         let key = ide_session.id.to_ascii_lowercase();
         if let Some(indexes) = agent_indexes.get(&key) {
             for &index in indexes {
+                agents[index].also_ide = true;
                 if !ide_session.summary.is_empty() {
                     agents[index].summary = ide_session.summary.clone();
                 }
@@ -1608,8 +1626,18 @@ pub fn lookup_session<'a>(sessions: &'a [Session], sid: &str) -> SessionLookup<'
         .collect::<HashSet<_>>()
         .len()
         == 1;
-    let all_cursor_copies = matches.iter().all(|s| s.source == "cursor");
-    if one_id && all_cursor_copies {
+    let all_cursor_family = matches
+        .iter()
+        .all(|s| s.source == "cursor" || s.source == "cursor-ide");
+    if one_id && all_cursor_family {
+        let agent_copies: Vec<&Session> = matches
+            .iter()
+            .copied()
+            .filter(|s| s.source == "cursor")
+            .collect();
+        if !agent_copies.is_empty() {
+            return SessionLookup::Found(prefer_session_copy(&agent_copies));
+        }
         return SessionLookup::Found(prefer_session_copy(&matches));
     }
     SessionLookup::Ambiguous(matches)
@@ -1726,6 +1754,7 @@ mod tests {
             project: project.into(),
             file: String::new(),
             is_sidechain: false,
+            also_ide: false,
         }
     }
 
@@ -1801,6 +1830,30 @@ mod tests {
             args.windows(2)
                 .any(|w| w[0] == "--workspace" && w[1] == ws)
         );
+    }
+
+    #[test]
+    fn ide_ui_includes_agent_transcript_with_matching_composer() {
+        let mut session = make_session(
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "2026-08-26",
+            "cursor",
+            "/tmp",
+            "",
+            "sidebar title",
+        );
+        assert!(!session.is_ide_ui());
+        session.also_ide = true;
+        assert!(session.is_ide_ui());
+        let ide = make_session(
+            "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+            "2026-08-26",
+            "cursor-ide",
+            "/tmp",
+            "",
+            "sidebar title",
+        );
+        assert!(ide.is_ide_ui());
     }
 
     #[test]
@@ -1924,6 +1977,7 @@ mod tests {
         assert!(merged.iter().all(|s| s.source == "cursor"));
         assert!(merged.iter().all(|s| s.summary == "Fix the login timeout"));
         assert!(merged.iter().all(|s| s.project == "/home/alice/src/myapp"));
+        assert!(merged.iter().all(|s| s.also_ide));
     }
 
     #[test]
@@ -1958,7 +2012,37 @@ mod tests {
         assert!(merged.iter().any(|s| s.source == "cursor"));
         let ide_row = merged.iter().find(|s| s.source == "cursor-ide").unwrap();
         assert_eq!(ide_row.summary, "Explain the cache layer");
+        assert!(!ide_row.also_ide);
         assert!(!merged.iter().any(|s| s.summary == "ghost header"));
+    }
+
+    #[test]
+    fn lookup_session_same_id_prefers_agent_over_ide() {
+        let sessions = vec![
+            make_session(
+                "11111111-2222-3333-4444-555555555555",
+                "2026-08-01",
+                "cursor",
+                "/tmp",
+                "",
+                "agent copy",
+            ),
+            make_session(
+                "11111111-2222-3333-4444-555555555555",
+                "2026-08-01",
+                "cursor-ide",
+                "/home/alice/src/myapp",
+                "",
+                "sidebar title",
+            ),
+        ];
+        match lookup_session(&sessions, "11111111") {
+            SessionLookup::Found(s) => {
+                assert_eq!(s.source, "cursor");
+                assert_eq!(s.summary, "agent copy");
+            }
+            other => panic!("expected agent copy, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2494,6 +2578,7 @@ mod tests {
             project: String::new(),
             file: src_file.to_string_lossy().to_string(),
             is_sidechain: false,
+            also_ide: false,
         };
 
         let target = tmp.path().join("target-dir");

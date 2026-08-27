@@ -36,17 +36,21 @@ macro_rules! c {
     };
 }
 
-fn src_tag(source: &str) -> String {
+fn src_tag(source: &str, also_ide: bool) -> String {
+    // IDE Agent chats write SQLite *and* an agent-transcripts jsonl with the
+    // same composer id. Prefer the IDE label — that's the UI the user used.
     let label = match source {
         "claude" => "claude",
         "codex" => "codex",
         "cursor-ide" => "cursor-ide",
-        _ => "cursor",
+        "cursor" if also_ide => "cursor-ide",
+        _ => "cursor-agent",
     };
     let color = match source {
         "claude" => "bg_cyan",
         "codex" => "bg_magenta",
         "cursor-ide" => "bg_yellow",
+        "cursor" if also_ide => "bg_yellow",
         _ => "bg_blue",
     };
     format!("{}{} {:<12} {}", c!(color), c!("bold"), label, c!("reset"))
@@ -116,9 +120,13 @@ fn print_title_line(title: &str) {
     println!("        {}{}{}", c!("bold"), title, c!("reset"));
 }
 
-/// Dim 8-char session-id chip. Every prefix resolves via inspect/view/
-/// export/resume/find.
+/// Dim 8-char session-id chip. Claude/Codex/Agent-CLI prefixes resolve via
+/// inspect/view/export/resume/find. Rows tagged `cursor-ide` omit the prefix
+/// (not shown in the Cursor sidebar). `list -v` still prints the full id.
 fn id_chip(session: &Session) -> String {
+    if session.is_ide_ui() {
+        return format!("{}--------{}", c!("dim"), c!("reset"));
+    }
     let short: String = session.id.chars().take(8).collect();
     format!("{}{:8}{}", c!("dim"), short, c!("reset"))
 }
@@ -149,7 +157,7 @@ pub fn print_list(sessions: &[Session], verbose: bool) {
     );
     let counts = copy_counts(sessions);
     for (i, s) in sessions.iter().enumerate() {
-        let tag = src_tag(&s.source);
+        let tag = src_tag(&s.source, s.also_ide);
         let title = title_of(&s.summary, &s.first_prompt, 100);
         let branch = labeled("BRANCH", &s.branch);
         let sidechain = if s.is_sidechain {
@@ -224,7 +232,7 @@ pub fn print_summarized(sessions: &[Session]) {
             let title = title_of(&s.summary, &s.first_prompt, 100);
             println!(
                 "    {} {}{}{}{}",
-                src_tag(&s.source),
+                src_tag(&s.source, s.also_ide),
                 id_chip(s),
                 dir_label(&s.project),
                 copies_label(&counts, s),
@@ -251,7 +259,7 @@ pub fn print_index_results(results: &[IndexResult], query: &str) {
         c!("reset")
     );
     for (i, r) in results.iter().enumerate() {
-        let tag = src_tag(&r.session.source);
+        let tag = src_tag(&r.session.source, r.session.also_ide);
         let score = format!("{}★ {:.1}{}", c!("yellow"), r.score, c!("reset"));
         let title = title_of(&r.session.summary, &r.display, 100);
         println!(
@@ -286,7 +294,7 @@ pub fn print_search_results(results: &[SearchResult], query: &str) {
         c!("reset")
     );
     for (i, r) in results.iter().enumerate() {
-        let tag = src_tag(&r.session.source);
+        let tag = src_tag(&r.session.source, r.session.also_ide);
         let score = format!(
             "{}★ {:.1}{}",
             c!("yellow"),
@@ -384,7 +392,7 @@ pub fn print_index_results_json(results: &[IndexResult], query: &str) {
 }
 
 pub fn print_inspect(info: &InspectInfo) {
-    let tag = src_tag(&info.source);
+    let tag = src_tag(&info.source, info.also_ide);
     let cleaned = display_title(&info.summary, 120);
     let summary = if cleaned.is_empty() {
         "(no summary)"
@@ -493,7 +501,7 @@ pub fn print_inspect(info: &InspectInfo) {
 }
 
 pub fn print_transcript(messages: &[Message], session: &Session, show_tools: bool) {
-    let tag = src_tag(&session.source);
+    let tag = src_tag(&session.source, session.also_ide);
     let cleaned = title_of(&session.summary, &session.first_prompt, 120);
     let summary = if cleaned == "(untitled)" {
         "(no summary)"
@@ -679,6 +687,7 @@ mod tests {
             project: "/home/alice/src/myapp".into(),
             file: String::new(),
             is_sidechain: false,
+            also_ide: false,
         };
         let hint = cursor_ide_resume_hint(&session);
         assert!(hint.contains("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
@@ -703,10 +712,50 @@ mod tests {
             project: String::new(),
             file: String::new(),
             is_sidechain: false,
+            also_ide: false,
         };
         let hint = cursor_ide_resume_hint(&session);
         assert!(!hint.contains("(unknown directory)"));
         assert!(hint.contains("no recorded workspace"));
+    }
+
+    #[test]
+    fn src_tag_labels_agent_as_cursor_agent() {
+        assert!(super::src_tag("cursor", false).contains("cursor-agent"));
+        assert!(super::src_tag("cursor-ide", false).contains("cursor-ide"));
+        assert!(super::src_tag("cursor", true).contains("cursor-ide"));
+        assert!(!super::src_tag("cursor", false).contains("cursor-ide"));
+    }
+
+    #[test]
+    fn id_chip_hides_ide_composer_prefix() {
+        let ide = Session {
+            source: "cursor-ide".into(),
+            id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            summary: "sidebar title".into(),
+            first_prompt: String::new(),
+            created: String::new(),
+            modified: String::new(),
+            date: "2026-08-26".into(),
+            messages: 2,
+            branch: String::new(),
+            project: "/tmp".into(),
+            file: String::new(),
+            is_sidechain: false,
+            also_ide: false,
+        };
+        let mut agent = Session {
+            source: "cursor".into(),
+            id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            ..ide.clone()
+        };
+        assert!(super::id_chip(&ide).contains("--------"));
+        assert!(!super::id_chip(&ide).contains("aaaaaaaa"));
+        assert!(super::id_chip(&agent).contains("aaaaaaaa"));
+        agent.also_ide = true;
+        assert!(super::src_tag("cursor", true).contains("cursor-ide"));
+        assert!(super::id_chip(&agent).contains("--------"));
+        assert!(!super::id_chip(&agent).contains("aaaaaaaa"));
     }
 
     #[test]

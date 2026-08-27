@@ -83,6 +83,16 @@ fn find_missing_session() {
 }
 
 #[test]
+fn resume_placeholder_id_points_at_ide_ui() {
+    let (mut cmd, _tmp) = isolated_cmd();
+    cmd.args(["resume", "00000000"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Cursor IDE UI"))
+        .stdout(predicate::str::contains("00000000"));
+}
+
+#[test]
 fn install_skill_creates_files() {
     let tmp = TempDir::new().unwrap();
     Command::cargo_bin("chat-history")
@@ -311,6 +321,7 @@ fn list_title_is_single_line_without_preamble() {
         .assert()
         .success()
         .stdout(predicate::str::contains("fix the flaky test suite"))
+        .stdout(predicate::str::contains("/Users/test/noisy"))
         .stdout(predicate::str::contains("manually_attached_skills").not());
 }
 
@@ -567,7 +578,7 @@ fn claude_jsonl_only_session_lists_ai_title_and_branch() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Login form validation"))
-        .stdout(predicate::str::contains("(feat-login)"));
+        .stdout(predicate::str::contains("BRANCH: feat-login"));
 }
 
 #[test]
@@ -626,7 +637,9 @@ fn search_index_finds_session() {
         .env("HOME", tmp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("docker deployment pipeline"));
+        .stdout(predicate::str::contains("docker deployment pipeline"))
+        .stdout(predicate::str::contains("DIR:"))
+        .stdout(predicate::str::contains("INDEX_FIELD:"));
 }
 
 #[test]
@@ -664,7 +677,7 @@ fn filter_by_source_flag() {
     // All fixture sessions are claude source
     Command::cargo_bin("chat-history")
         .unwrap()
-        .args(["--source", "cursor"])
+        .args(["--source", "cursor-agent"])
         .env("CLAUDE_CONFIG_DIR", tmp.path())
         .env("HOME", tmp.path())
         .assert()
@@ -1804,6 +1817,73 @@ fn cursor_sessions_listed() {
         stdout.contains("refactor the database module"),
         "should show cursor session's first prompt"
     );
+    assert!(
+        stdout.contains("cursor-agent"),
+        "should show agent tag for cursor sessions"
+    );
+    assert!(
+        stdout.contains("Users-test-myapp"),
+        "should show the cursor workspace directory slug"
+    );
+}
+
+fn setup_cursor_duplicate_id_fixture(tmp: &TempDir) {
+    let session_id = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+    for (slug, prompt) in [
+        ("tmp-scratch", "old copy from tmp workspace"),
+        ("Users-test-myapp", "continued copy in myapp"),
+    ] {
+        let dir = tmp
+            .path()
+            .join(".cursor")
+            .join("projects")
+            .join(slug)
+            .join("agent-transcripts")
+            .join(session_id);
+        fs::create_dir_all(&dir).unwrap();
+        let line = serde_json::json!({
+            "role": "user",
+            "message": {"content": [{"type": "text", "text": prompt}]}
+        });
+        fs::write(
+            dir.join(format!("{session_id}.jsonl")),
+            serde_json::to_string(&line).unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn duplicate_cursor_session_id_lists_copies_and_resolves() {
+    let tmp = TempDir::new().unwrap();
+    setup_cursor_duplicate_id_fixture(&tmp);
+
+    let list = Command::cargo_bin("chat-history")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(list.stdout).unwrap();
+    assert!(list.status.success());
+    assert!(
+        stdout.contains("COPIES: 2"),
+        "duplicate ids should be labeled: {stdout}"
+    );
+
+    Command::cargo_bin("chat-history")
+        .unwrap()
+        .args(["find", "bbbbbbbb"])
+        .env("HOME", tmp.path())
+        .env("CLAUDE_CONFIG_DIR", tmp.path())
+        .env("NO_COLOR", "1")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("stored in 2"))
+        .stdout(predicate::str::contains(
+            "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+        ));
 }
 
 #[test]
@@ -1852,7 +1932,7 @@ fn cursor_subagent_sessions_hidden_by_default() {
 
     Command::cargo_bin("chat-history")
         .unwrap()
-        .args(["--source", "cursor"])
+        .args(["--source", "cursor-agent"])
         .env("HOME", tmp.path())
         .env("CLAUDE_CONFIG_DIR", tmp.path())
         .env("NO_COLOR", "1")
@@ -1866,7 +1946,7 @@ fn cursor_subagent_sessions_hidden_by_default() {
             "search",
             "subagent analysis",
             "--source",
-            "cursor",
+            "cursor-agent",
             "--deep",
         ])
         .env("HOME", tmp.path())
@@ -1885,7 +1965,7 @@ fn cursor_subagent_sessions_listed_and_searchable_with_flag() {
 
     Command::cargo_bin("chat-history")
         .unwrap()
-        .args(["--source", "cursor", "--sidechains"])
+        .args(["--source", "cursor-agent", "--sidechains"])
         .env("HOME", tmp.path())
         .env("CLAUDE_CONFIG_DIR", tmp.path())
         .env("NO_COLOR", "1")
@@ -1900,7 +1980,7 @@ fn cursor_subagent_sessions_listed_and_searchable_with_flag() {
             "search",
             "subagent analysis",
             "--source",
-            "cursor",
+            "cursor-agent",
             "--deep",
             "--sidechains",
         ])
@@ -2062,12 +2142,12 @@ fn mixed_sources_both_listed() {
         .unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
-        stdout.contains("CC"),
-        "should show Claude sessions with CC tag"
+        stdout.contains("claude"),
+        "should show Claude sessions with claude tag"
     );
     assert!(
-        stdout.contains("CR"),
-        "should show Cursor sessions with CR tag"
+        stdout.contains("cursor-agent"),
+        "should show Cursor sessions with agent tag"
     );
     assert!(
         stdout.contains("3 sessions"),

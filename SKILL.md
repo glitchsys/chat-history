@@ -50,7 +50,7 @@ Search, inspect, and export Claude Code, Cursor, and Codex conversation history.
 chat-history                                      # newest first; short IDs on every row (-v for full IDs + paths)
 chat-history --from yesterday --to yesterday -s   # a specific day, grouped
 chat-history --from "3 days ago"                  # natural-language dates
-chat-history --source claude                      # claude | cursor | codex
+chat-history --source claude                      # claude | cursor | cursor-agent | codex
 chat-history -L                                   # current workspace only
 chat-history --branch feature-xyz -k "auth" -v    # branch / keyword filters
 
@@ -65,7 +65,7 @@ chat-history inspect --last                # accomplishments, tools, model, toke
 chat-history inspect <partial-uuid>
 chat-history view <id> --plain             # transcript, pipe-friendly (--tools for tool names)
 chat-history export <id> -o session.md
-chat-history resume <id>                   # resume a Claude Code or Codex session
+chat-history resume <id>                   # resume a Claude Code, Cursor Agent, or Codex session
 chat-history find <id>                     # print transcript file path for scripting
 chat-history completions zsh               # shell completions (bash/zsh/fish/elvish/powershell)
 ```
@@ -75,5 +75,7 @@ chat-history completions zsh               # shell completions (bash/zsh/fish/el
 
 ## Interpreting output
 
-- `CC` = Claude Code, `CR` = Cursor, `CX` = Codex; `★ N.N` = relevance score.
+- `claude` = Claude Code, `cursor` = Cursor IDE (Chat/Ask, SQLite), `cursor-agent` = Cursor Agent transcripts, `codex` = Codex; `★ N.N` = relevance score.
+- Header line has `DIR:` (spawn directory) and, for index search, `INDEX_FIELD:` (`summary` / `first_prompt` / `branch`). Title is on the next line. Cursor IDE rows show `00000000` instead of a session id; `resume 00000000` explains how to open the chat in the Cursor IDE UI.
+- `COPIES: N` means the same session id exists in more than one Cursor project folder; `inspect`/`resume`/`find` pick one copy (cwd match, else newest) and print the others.
 - Accepted dates: `YYYY-MM-DD`, `today`, `yesterday`, `"3 days ago"`, `"last week"`, `"last month"`.

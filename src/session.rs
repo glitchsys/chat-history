@@ -4,7 +4,7 @@ use crate::parser::{
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -262,6 +262,54 @@ pub fn copy_session_to_dir(session: &Session, target_dir: &Path) -> std::io::Res
     Ok(())
 }
 
+/// Binary + args to resume this session in its original tool.
+/// Cursor uses `agent --resume <id>` (falls back to `cursor agent` if needed).
+pub fn resume_command(session: &Session) -> Option<(String, Vec<String>)> {
+    match session.source.as_str() {
+        "codex" => Some(("codex".into(), vec!["resume".into(), session.id.clone()])),
+        "claude" => Some((
+            "claude".into(),
+            vec!["--resume".into(), session.id.clone()],
+        )),
+        "cursor-agent" => {
+            let mut args = Vec::new();
+            let bin = if command_on_path("agent") {
+                "agent".into()
+            } else {
+                args.push("agent".into());
+                "cursor".into()
+            };
+            args.push("--resume".into());
+            args.push(session.id.clone());
+            if !session.project.is_empty() && Path::new(&session.project).is_dir() {
+                args.push("--workspace".into());
+                args.push(session.project.clone());
+            }
+            Some((bin, args))
+        }
+        _ => None,
+    }
+}
+
+/// Directory the resumed tool should start in (the session's spawn cwd).
+pub fn resume_working_dir(session: &Session) -> Option<PathBuf> {
+    if session.project.is_empty() {
+        return None;
+    }
+    let dir = PathBuf::from(&session.project);
+    dir.is_dir().then_some(dir)
+}
+
+fn command_on_path(name: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| {
+        let p = dir.join(name);
+        p.is_file()
+    })
+}
+
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
@@ -498,6 +546,74 @@ pub fn load_claude_sessions() -> Vec<Session> {
     sessions
 }
 
+/// Cursor stores each workspace as `~/.cursor/projects/<slug>/` where `<slug>`
+/// is the absolute path with `/` replaced by `-`. Recover the spawn directory
+/// by matching existing path components so hyphenated folder names survive
+/// (e.g. `chat-history` stays one component, not `chat/history`).
+fn cursor_workspace_dir(project_dir: &Path) -> String {
+    let slug = project_dir
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    decode_cursor_project_slug(&slug)
+}
+
+fn decode_cursor_project_slug(slug: &str) -> String {
+    if slug.is_empty() {
+        return String::new();
+    }
+    let greedy = match_slug_to_existing_path(Path::new("/"), slug);
+    if Path::new(&greedy).is_dir() {
+        return greedy;
+    }
+    let naive = format!("/{}", slug.replace('-', "/"));
+    if Path::new(&naive).is_dir() {
+        return naive;
+    }
+    slug.to_string()
+}
+
+fn match_slug_to_existing_path(root: &Path, slug: &str) -> String {
+    let mut current = root.to_path_buf();
+    let mut rest = slug;
+    while !rest.is_empty() {
+        let Ok(entries) = fs::read_dir(&current) else {
+            current.push(rest);
+            break;
+        };
+        let mut best: Option<String> = None;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let matched = rest == name
+                || rest
+                    .strip_prefix(&name)
+                    .is_some_and(|tail| tail.is_empty() || tail.starts_with('-'));
+            if matched && best.as_ref().is_none_or(|b| name.len() > b.len()) {
+                best = Some(name);
+            }
+        }
+        match best {
+            Some(name) => {
+                let skip = name.len();
+                current.push(&name);
+                rest = rest.get(skip..).unwrap_or("");
+                if rest.starts_with('-') {
+                    rest = &rest[1..];
+                }
+            }
+            None => {
+                current.push(rest);
+                break;
+            }
+        }
+    }
+    current.to_string_lossy().into_owned()
+}
+
 pub fn load_cursor_sessions() -> Vec<Session> {
     let base = cursor_projects_dir();
     if !base.exists() {
@@ -511,6 +627,7 @@ pub fn load_cursor_sessions() -> Vec<Session> {
             if !transcripts.is_dir() {
                 continue;
             }
+            let project = cursor_workspace_dir(&pd.path());
             let mut txt_ids: HashSet<String> = HashSet::new();
             let mut dir_entries: Vec<(String, PathBuf)> = Vec::new();
             if let Ok(entries) = fs::read_dir(&transcripts) {
@@ -533,7 +650,7 @@ pub fn load_cursor_sessions() -> Vec<Session> {
                             path.to_string_lossy().to_string()
                         };
                         sessions.push(Session {
-                            source: "cursor".into(),
+                            source: "cursor-agent".into(),
                             id: sid,
                             summary: String::new(),
                             first_prompt: first,
@@ -542,7 +659,7 @@ pub fn load_cursor_sessions() -> Vec<Session> {
                             date,
                             messages: 0,
                             branch: String::new(),
-                            project: pd.file_name().to_string_lossy().to_string(),
+                            project: project.clone(),
                             file,
                             is_sidechain: false,
                         });
@@ -573,7 +690,7 @@ pub fn load_cursor_sessions() -> Vec<Session> {
                         let date = mtime_date(&subagent_path).unwrap_or_default();
                         let first = cursor_first_prompt_jsonl(&subagent_path);
                         sessions.push(Session {
-                            source: "cursor".into(),
+                            source: "cursor-agent".into(),
                             id: sid,
                             summary: String::new(),
                             first_prompt: first,
@@ -582,7 +699,7 @@ pub fn load_cursor_sessions() -> Vec<Session> {
                             date,
                             messages: 0,
                             branch: String::new(),
-                            project: pd.file_name().to_string_lossy().to_string(),
+                            project: project.clone(),
                             file: subagent_path.to_string_lossy().to_string(),
                             is_sidechain: true,
                         });
@@ -599,7 +716,7 @@ pub fn load_cursor_sessions() -> Vec<Session> {
                 let date = mtime_date(&jf).unwrap_or_default();
                 let first = cursor_first_prompt_jsonl(&jf);
                 sessions.push(Session {
-                    source: "cursor".into(),
+                    source: "cursor-agent".into(),
                     id: dirname,
                     summary: String::new(),
                     first_prompt: first,
@@ -608,7 +725,7 @@ pub fn load_cursor_sessions() -> Vec<Session> {
                     date,
                     messages: 0,
                     branch: String::new(),
-                    project: pd.file_name().to_string_lossy().to_string(),
+                    project: project.clone(),
                     file: jf.to_string_lossy().to_string(),
                     is_sidechain: false,
                 });
@@ -769,9 +886,35 @@ pub fn load_codex_sessions() -> Vec<Session> {
 
 pub fn load_all_sessions() -> Vec<Session> {
     let mut all = load_claude_sessions();
-    all.extend(load_cursor_sessions());
+    all.extend(merge_cursor_sessions(
+        load_cursor_sessions(),
+        crate::cursor_ide::load_cursor_ide_sessions(),
+    ));
     all.extend(load_codex_sessions());
     all
+}
+
+/// Overlay IDE sidebar titles/paths onto matching agent transcripts.
+/// Keep both rows: jsonl stays `cursor-agent`, SQLite stays `cursor`.
+pub fn merge_cursor_sessions(agents: Vec<Session>, ide: Vec<Session>) -> Vec<Session> {
+    let mut agents = agents;
+    let mut by_id: HashMap<String, usize> = HashMap::new();
+    for (i, s) in agents.iter().enumerate() {
+        by_id.insert(s.id.to_ascii_lowercase(), i);
+    }
+    for ide_s in &ide {
+        let key = ide_s.id.to_ascii_lowercase();
+        if let Some(&i) = by_id.get(&key) {
+            if !ide_s.summary.is_empty() {
+                agents[i].summary = ide_s.summary.clone();
+            }
+            if !ide_s.project.is_empty() {
+                agents[i].project = ide_s.project.clone();
+            }
+        }
+    }
+    agents.extend(ide);
+    agents
 }
 
 pub fn parse_claude_jsonl(
@@ -1235,6 +1378,31 @@ pub fn parse_session(session: &Session, extract_meta: bool) -> (Vec<Message>, Op
         }
         return (messages, None);
     }
+    if session.source == "cursor" {
+        let messages = if session.file.ends_with(".jsonl") {
+            parse_cursor_jsonl(&session.file)
+        } else if session.file.ends_with(".txt") {
+            parse_cursor_txt(&session.file)
+        } else {
+            crate::cursor_ide::parse_cursor_ide(session)
+        };
+        if extract_meta {
+            return (
+                messages,
+                Some(SessionMeta {
+                    summary: if session.summary.is_empty() {
+                        None
+                    } else {
+                        Some(session.summary.clone())
+                    },
+                    custom_title: None,
+                    model: None,
+                    total_tokens: 0,
+                }),
+            );
+        }
+        return (messages, None);
+    }
     let messages = if session.file.ends_with(".jsonl") {
         parse_cursor_jsonl(&session.file)
     } else {
@@ -1336,6 +1504,7 @@ pub fn recency_key(s: &Session) -> (Option<DateTime<FixedOffset>>, String) {
     (parse_any_timestamp(ts), ts.clone())
 }
 
+#[derive(Debug)]
 pub enum SessionLookup<'a> {
     Found(&'a Session),
     /// Multiple sessions share the prefix — never silently pick one.
@@ -1344,21 +1513,95 @@ pub enum SessionLookup<'a> {
 }
 
 pub fn lookup_session<'a>(sessions: &'a [Session], sid: &str) -> SessionLookup<'a> {
-    if let Some(s) = sessions.iter().find(|s| s.id.eq_ignore_ascii_case(sid)) {
-        return SessionLookup::Found(s);
+    let matches = matching_sessions(sessions, sid);
+    if matches.is_empty() {
+        return SessionLookup::NotFound;
     }
-    let matches: Vec<&Session> = sessions
+    let distinct: HashSet<String> = matches.iter().map(|s| s.id.to_ascii_lowercase()).collect();
+    if distinct.len() == 1 {
+        return SessionLookup::Found(prefer_session_copy(&matches));
+    }
+    SessionLookup::Ambiguous(matches)
+}
+
+fn matching_sessions<'a>(sessions: &'a [Session], sid: &str) -> Vec<&'a Session> {
+    let exact: Vec<&Session> = sessions
+        .iter()
+        .filter(|s| s.id.eq_ignore_ascii_case(sid))
+        .collect();
+    if !exact.is_empty() {
+        return exact;
+    }
+    sessions
         .iter()
         .filter(|s| {
             s.id.get(..sid.len())
                 .is_some_and(|prefix| prefix.eq_ignore_ascii_case(sid))
         })
-        .collect();
-    match matches.len() {
-        0 => SessionLookup::NotFound,
-        1 => SessionLookup::Found(matches[0]),
-        _ => SessionLookup::Ambiguous(matches),
+        .collect()
+}
+
+/// Same conversation stored under more than one Cursor project folder.
+pub fn session_copies<'a>(sessions: &'a [Session], session: &Session) -> Vec<&'a Session> {
+    sessions
+        .iter()
+        .filter(|s| s.source == session.source && s.id.eq_ignore_ascii_case(&session.id))
+        .collect()
+}
+
+pub fn copy_count(sessions: &[Session], session: &Session) -> usize {
+    session_copies(sessions, session).len()
+}
+
+/// Prefer the copy whose workspace matches cwd; otherwise the newest.
+/// When the same id exists as both IDE (`cursor`) and jsonl (`cursor-agent`),
+/// resume/inspect pick the agent transcript.
+fn prefer_session_copy<'a>(copies: &[&'a Session]) -> &'a Session {
+    if copies.len() == 1 {
+        return copies[0];
     }
+    let agent_copies: Vec<&Session> = copies
+        .iter()
+        .copied()
+        .filter(|s| s.source == "cursor-agent")
+        .collect();
+    if !agent_copies.is_empty() && agent_copies.len() < copies.len() {
+        return prefer_session_copy(&agent_copies);
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd_s = cwd.to_string_lossy();
+        let cwd_hits: Vec<&&Session> = copies
+            .iter()
+            .filter(|s| {
+                !s.project.is_empty()
+                    && (cwd_s == s.project
+                        || cwd_s.starts_with(&format!("{}/", s.project))
+                        || s.project.starts_with(cwd_s.as_ref()))
+            })
+            .collect();
+        if cwd_hits.len() == 1 {
+            return cwd_hits[0];
+        }
+        if let Some(name) = cwd.file_name() {
+            let name = name.to_string_lossy();
+            let named: Vec<&&Session> = copies
+                .iter()
+                .filter(|s| {
+                    Path::new(&s.project)
+                        .file_name()
+                        .is_some_and(|n| n.to_string_lossy() == name)
+                })
+                .collect();
+            if named.len() == 1 {
+                return named[0];
+            }
+        }
+    }
+    copies
+        .iter()
+        .max_by_key(|s| recency_key(s))
+        .copied()
+        .unwrap_or(copies[0])
 }
 
 /// Exact id or *unique* prefix. Ambiguous prefixes resolve to None; callers
@@ -1413,6 +1656,91 @@ mod tests {
     }
 
     #[test]
+    fn resume_command_claude_and_codex() {
+        let claude = make_session("c1", "2026-01-01", "claude", "/p", "", "");
+        assert_eq!(
+            resume_command(&claude),
+            Some(("claude".into(), vec!["--resume".into(), "c1".into()]))
+        );
+        let codex = make_session("x1", "2026-01-01", "codex", "/p", "", "");
+        assert_eq!(
+            resume_command(&codex),
+            Some(("codex".into(), vec!["resume".into(), "x1".into()]))
+        );
+    }
+
+    #[test]
+    fn resume_command_cursor_uses_resume_flag() {
+        let missing = make_session(
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "2026-08-26",
+            "cursor-agent",
+            "/no/such/cursor/ws",
+            "",
+            "",
+        );
+        let (bin, args) = resume_command(&missing).expect("cursor resume");
+        assert!(bin == "agent" || bin == "cursor");
+        assert!(args.iter().any(|a| a == "--resume"));
+        assert!(args.iter().any(|a| a == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
+        assert!(!args.iter().any(|a| a == "--workspace"));
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ws = dir.path().to_string_lossy().into_owned();
+        let present = make_session(
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "2026-08-26",
+            "cursor-agent",
+            &ws,
+            "",
+            "",
+        );
+        let (_, args) = resume_command(&present).expect("cursor resume with workspace");
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--workspace" && w[1] == ws)
+        );
+    }
+
+    #[test]
+    fn resume_working_dir_requires_existing_folder() {
+        let missing = make_session("id", "2026-01-01", "cursor-agent", "/no/such/ws", "", "");
+        assert!(resume_working_dir(&missing).is_none());
+        let dir = tempfile::TempDir::new().unwrap();
+        let present = make_session(
+            "id",
+            "2026-01-01",
+            "cursor-agent",
+            dir.path().to_str().unwrap(),
+            "",
+            "",
+        );
+        assert_eq!(
+            resume_working_dir(&present).as_deref(),
+            Some(dir.path())
+        );
+    }
+
+    #[test]
+    fn cursor_slug_keeps_hyphenated_dir_names() {
+        let root = tempfile::TempDir::new().unwrap();
+        let ws = root.path().join("devops").join("chat-history");
+        fs::create_dir_all(&ws).unwrap();
+        assert_eq!(
+            match_slug_to_existing_path(root.path(), "devops-chat-history"),
+            ws.to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn cursor_slug_falls_back_to_slug_when_path_missing() {
+        assert_eq!(
+            decode_cursor_project_slug("zz-no-such-cursor-ws-xyz"),
+            "zz-no-such-cursor-ws-xyz"
+        );
+    }
+
+    #[test]
     fn encode_path_replaces_all_non_alphanumerics() {
         // Claude Code replaces every non-alphanumeric character with '-',
         // not just '/'; dots and underscores must match its encoding or
@@ -1448,6 +1776,97 @@ mod tests {
             lookup_session(&sessions, "abc-1"),
             SessionLookup::Found(s) if s.id == "abc-123"
         ));
+    }
+
+    #[test]
+    fn merge_cursor_copies_ide_title_onto_agent_transcript() {
+        let agents = vec![make_session(
+            "11111111-2222-3333-4444-555555555555",
+            "2026-08-01",
+            "cursor-agent",
+            "Users-test-myapp",
+            "",
+            "",
+        )];
+        let ide = make_session(
+            "11111111-2222-3333-4444-555555555555",
+            "2026-08-01",
+            "cursor",
+            "/home/alice/src/myapp",
+            "",
+            "Fix the login timeout",
+        );
+        let merged = merge_cursor_sessions(agents, vec![ide]);
+        assert_eq!(merged.len(), 2);
+        let agent = merged.iter().find(|s| s.source == "cursor-agent").unwrap();
+        let ide_row = merged.iter().find(|s| s.source == "cursor").unwrap();
+        assert_eq!(agent.summary, "Fix the login timeout");
+        assert_eq!(agent.project, "/home/alice/src/myapp");
+        assert_eq!(ide_row.summary, "Fix the login timeout");
+    }
+
+    #[test]
+    fn merge_cursor_keeps_ide_row_as_cursor() {
+        let agents = vec![make_session(
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "2026-08-01",
+            "cursor-agent",
+            "Users-test-myapp",
+            "",
+            "",
+        )];
+        let ide = make_session(
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "2026-08-01",
+            "cursor",
+            "/home/alice/src/myapp",
+            "",
+            "Explain the cache layer",
+        );
+        let merged = merge_cursor_sessions(agents, vec![ide]);
+        assert_eq!(merged.len(), 2);
+        assert!(merged.iter().any(|s| s.source == "cursor-agent"));
+        let ide_row = merged.iter().find(|s| s.source == "cursor").unwrap();
+        assert_eq!(ide_row.summary, "Explain the cache layer");
+    }
+
+    #[test]
+    fn lookup_session_same_id_copies_are_not_ambiguous() {
+        let sessions = vec![
+            make_session(
+                "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+                "2025-08-25",
+                "cursor-agent",
+                "/tmp",
+                "",
+                "old copy",
+            ),
+            make_session(
+                "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+                "2025-08-26",
+                "cursor-agent",
+                "/home/alice/src/myapp",
+                "",
+                "new copy",
+            ),
+        ];
+        match lookup_session(&sessions, "bbbbbbbb") {
+            SessionLookup::Found(s) => assert_eq!(s.project, "/home/alice/src/myapp"),
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lookup_session_prefers_agent_transcript_over_ide_row() {
+        let id = "cccccccc-dddd-eeee-ffff-000000000000";
+        let sessions = vec![
+            make_session(id, "2026-08-26", "cursor", "/home/alice/src/myapp", "", "sidebar title"),
+            make_session(id, "2026-08-20", "cursor-agent", "/home/alice/src/myapp", "", ""),
+        ];
+        match lookup_session(&sessions, id) {
+            SessionLookup::Found(s) => assert_eq!(s.source, "cursor-agent"),
+            other => panic!("expected Found, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1518,7 +1937,7 @@ mod tests {
         let sessions = vec![make_session(
             "1",
             "2025-01-01",
-            "cursor",
+            "cursor-agent",
             "proj-one-two-123",
             "",
             "",
@@ -1670,7 +2089,7 @@ mod tests {
             make_session(
                 "2",
                 "2025-06-15",
-                "cursor",
+                "cursor-agent",
                 "chat-history",
                 "main",
                 "fix docker",

@@ -121,9 +121,15 @@ pub fn index_search(sessions: &[Session], query: &str, limit: usize) -> Vec<Inde
 }
 
 pub fn index_quality_ok(results: &[IndexResult]) -> bool {
-    results
-        .first()
-        .is_some_and(|r| r.score >= INDEX_QUALITY_THRESHOLD)
+    let Some(best) = results.first() else {
+        return false;
+    };
+    // Recency damping turns a title hit into 3.0 * 1.5 = 4.5 (under 5.0) for
+    // chats from last month. Those are still the names shown in the IDE.
+    if best.matched_field == "summary" || best.matched_field == "first_prompt" {
+        return true;
+    }
+    best.score >= INDEX_QUALITY_THRESHOLD
 }
 
 fn parse_timeframe_duration(tf: &str) -> chrono::Duration {
@@ -242,7 +248,30 @@ pub fn scored_search(
         .par_iter()
         .filter(|s| !s.file.is_empty() && std::path::Path::new(&s.file).exists())
         .flat_map(|s| {
-            let (messages, _) = parse_session(s, false);
+            let (mut messages, _) = parse_session(s, false);
+            let title = if !s.summary.is_empty() {
+                s.summary.clone()
+            } else {
+                s.first_prompt.clone()
+            };
+            if !title.is_empty() && !messages.iter().any(|m| m.content == title) {
+                messages.insert(
+                    0,
+                    Message {
+                        uuid: "index-title".into(),
+                        timestamp: String::new(),
+                        role: "user".into(),
+                        content: title,
+                        session_id: s.id.clone(),
+                        project_path: s.project.clone(),
+                        tool_uses: Vec::new(),
+                        files_referenced: Vec::new(),
+                        error_patterns: Vec::new(),
+                        relevance_score: 0.0,
+                        final_score: 0.0,
+                    },
+                );
+            }
             let mut hits = Vec::new();
             for mut msg in messages {
                 let cl = msg.content_lower();
@@ -416,7 +445,10 @@ pub fn scored_search(
     // Quality gate with fallback (matches Python behavior)
     let quality: Vec<(Session, Message)> = capped
         .iter()
-        .filter(|(_, m)| m.final_score >= 0.5 && m.content.len() >= 40)
+        .filter(|(_, m)| {
+            m.final_score >= 0.5
+                && (m.content.len() >= 40 || m.uuid == "index-title")
+        })
         .cloned()
         .collect();
     let mut final_results = if quality.is_empty() { capped } else { quality };
@@ -589,10 +621,21 @@ mod tests {
         let results = vec![IndexResult {
             session: make_session("1", "test", "", "proj", "main"),
             score: 2.0,
-            matched_field: "summary".into(),
-            display: "test".into(),
+            matched_field: "project".into(),
+            display: "proj".into(),
         }];
         assert!(!index_quality_ok(&results));
+    }
+
+    #[test]
+    fn index_quality_ok_title_match_when_recency_damps_score() {
+        let results = vec![IndexResult {
+            session: make_session("1", "review mergeability checks", "", "proj", "main"),
+            score: 4.5,
+            matched_field: "summary".into(),
+            display: "review mergeability checks".into(),
+        }];
+        assert!(index_quality_ok(&results));
     }
 
     #[test]
@@ -613,8 +656,8 @@ mod tests {
         let below = vec![IndexResult {
             session: make_session("1", "test", "", "proj", "main"),
             score: INDEX_QUALITY_THRESHOLD - 0.1,
-            matched_field: "summary".into(),
-            display: "test".into(),
+            matched_field: "project".into(),
+            display: "proj".into(),
         }];
         assert!(!index_quality_ok(&below));
     }
@@ -638,5 +681,35 @@ mod tests {
         );
         let capped = boost.min(MAX_TOTAL_BOOST);
         assert_eq!(capped, MAX_TOTAL_BOOST, "capped boost should equal limit");
+    }
+
+    #[test]
+    fn scored_search_includes_session_title_when_absent_from_transcript() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let data = concat!(
+            r#"{"type":"user","message":{"role":"user","content":"please look at the checkout workflow"},"timestamp":"2026-08-14T00:00:00Z","uuid":"u1"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":"I will inspect the github actions file and suggest safer git fetch flags."},"timestamp":"2026-08-14T00:01:00Z","uuid":"u2"}"#,
+        );
+        std::fs::write(tmp.path(), data).unwrap();
+        let mut s = make_session(
+            "aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "review mergeability checks",
+            "please look at the checkout workflow",
+            "/home/alice/src/myapp",
+            "main",
+        );
+        s.file = tmp.path().to_str().unwrap().to_string();
+        let results = scored_search(&[s], "mergeability", "all", 10, None);
+        assert!(
+            results
+                .iter()
+                .any(|r| r.message.content.contains("mergeability")),
+            "expected title hit, got {:?}",
+            results
+                .iter()
+                .map(|r| r.message.content.clone())
+                .collect::<Vec<_>>()
+        );
     }
 }

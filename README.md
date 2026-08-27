@@ -69,7 +69,7 @@ chat-history inspect <partial-uuid>
 chat-history view --last --plain
 chat-history view <id> --tools
 chat-history export <id> -o session.md
-chat-history resume <id>                  # Claude Code or Codex only
+chat-history resume <id>                  # Claude Code, Cursor Agent, or Codex
 chat-history find <id>                    # absolute path for further tooling
 
 # Shell completions (bash, zsh, fish, elvish, powershell)
@@ -84,7 +84,7 @@ These filters apply to session listing, `search`, and `--last` selection. Explic
 
 ```bash
 # Listing / search / --last filters
-chat-history --source claude              # claude | cursor | codex
+chat-history --source claude              # claude | cursor | cursor-agent | codex
 chat-history --project chat-history
 chat-history --branch feature-xyz
 chat-history --from "3 days ago" --to today
@@ -116,9 +116,11 @@ Human-readable results include an 8-char UUID prefix (e.g. `[e363d98d]`) — pas
 
 ### Interpreting output
 
-- `CC` = Claude Code, `CR` = Cursor, `CX` = Codex
+- `claude` = Claude Code, `agent` = Cursor Agent, `codex` = Codex
+- Header line: source, date, short id, score, `DIR:` spawn directory (`$HOME` shown as `~`), and (index search) `INDEX_FIELD:`
+- Title / match text is on the following indented line
 - `★ N.N` = relevance (higher is better)
-- `[summary]` / `[first_prompt]` / `[branch]` = which index field matched
+- `INDEX_FIELD:` is `summary`, `first_prompt`, or `branch`
 - `inspect` → duration, messages, model, tokens, tools, files, accomplishments, key decisions
 - Claude Code titles come from `ai-title` / `custom-title` JSONL when available
 - Subagent/sidechain sessions are omitted unless `--sidechains`; this includes Cursor transcripts under `agent-transcripts/*/subagents/` (tagged `[subagent]`)

@@ -2328,3 +2328,117 @@ fn empty_and_whitespace_messages_still_filtered() {
         "Empty strings and noise patterns should still be filtered, got {count} results"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Cursor IDE (state.vscdb) source
+// ---------------------------------------------------------------------------
+
+/// Minimal `state.vscdb` with one sidebar chat: a header plus one user bubble.
+/// Returns the directory to pass as `CURSOR_USER_DIR`.
+fn setup_cursor_ide_fixture(tmp: &TempDir) -> std::path::PathBuf {
+    let user = tmp.path().join("cursor-user");
+    let dir = user.join("globalStorage");
+    fs::create_dir_all(&dir).unwrap();
+    let conn = rusqlite::Connection::open(dir.join("state.vscdb")).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE composerHeaders (
+            composerId TEXT PRIMARY KEY, workspaceId TEXT, createdAt INTEGER,
+            lastUpdatedAt INTEGER, isArchived INTEGER, isSubagent INTEGER,
+            recency INTEGER, checkpointAt INTEGER, value TEXT);
+         CREATE TABLE cursorDiskKV (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);",
+    )
+    .unwrap();
+    let id = "abcd1234-0000-4000-8000-000000000001";
+    let header = serde_json::json!({
+        "name": "Explain the cache layer",
+        "unifiedMode": "agent",
+        "workspaceIdentifier": {"uri": {"fsPath": "/home/alice/src/myapp", "path": "/home/alice/src/myapp"}}
+    });
+    conn.execute(
+        "INSERT INTO composerHeaders (composerId, createdAt, lastUpdatedAt, isSubagent, value)
+         VALUES (?1, 1782941109570, 1782941109570, 0, ?2)",
+        rusqlite::params![id, header.to_string()],
+    )
+    .unwrap();
+    let bubble = serde_json::json!({
+        "type": 1,
+        "text": "why does the cache layer miss on warm keys",
+        "bubbleId": "b1",
+        "createdAt": "2026-07-01T10:00:00.000Z"
+    });
+    conn.execute(
+        "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+        rusqlite::params![format!("bubbleId:{id}:b1"), bubble.to_string()],
+    )
+    .unwrap();
+    user
+}
+
+fn cursor_ide_cmd(tmp: &TempDir, user: &std::path::Path) -> Command {
+    let mut cmd = Command::cargo_bin("chat-history").unwrap();
+    cmd.env("CLAUDE_CONFIG_DIR", tmp.path());
+    cmd.env("HOME", tmp.path());
+    cmd.env_remove("CODEX_HOME");
+    cmd.env("CURSOR_USER_DIR", user);
+    cmd.env("NO_COLOR", "1");
+    cmd
+}
+
+#[test]
+fn cursor_ide_source_lists_chat_with_usable_id() {
+    let tmp = TempDir::new().unwrap();
+    let user = setup_cursor_ide_fixture(&tmp);
+    cursor_ide_cmd(&tmp, &user)
+        .args(["--source", "cursor-ide"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cursor-ide"))
+        .stdout(predicate::str::contains("Explain the cache layer"))
+        .stdout(predicate::str::contains("abcd1234"))
+        .stdout(predicate::str::contains("/home/alice/src/myapp"));
+    // The listed prefix resolves like any other id.
+    cursor_ide_cmd(&tmp, &user)
+        .args(["view", "abcd1234", "--plain"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("warm keys"));
+    cursor_ide_cmd(&tmp, &user)
+        .args(["find", "abcd1234"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state.vscdb"));
+}
+
+#[test]
+fn cursor_ide_resume_prints_sidebar_hint_instead_of_launching() {
+    let tmp = TempDir::new().unwrap();
+    let user = setup_cursor_ide_fixture(&tmp);
+    cursor_ide_cmd(&tmp, &user)
+        .args(["resume", "abcd1234"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Cursor IDE UI"))
+        .stdout(predicate::str::contains("/home/alice/src/myapp"))
+        .stdout(predicate::str::contains("Explain the cache layer"))
+        .stdout(predicate::str::contains(
+            "abcd1234-0000-4000-8000-000000000001",
+        ));
+}
+
+#[test]
+fn cursor_ide_search_json_reports_source_and_also_ide() {
+    let tmp = TempDir::new().unwrap();
+    let user = setup_cursor_ide_fixture(&tmp);
+    let out = cursor_ide_cmd(&tmp, &user)
+        .args(["search", "cache", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let first = &json["results"][0];
+    assert_eq!(first["source"], "cursor-ide");
+    assert_eq!(first["also_ide"], false);
+    assert_eq!(first["session_id"], "abcd1234-0000-4000-8000-000000000001");
+}

@@ -294,7 +294,7 @@ pub fn resume_command(session: &Session) -> Option<ResumeAction> {
         }),
         "cursor" => {
             let mut args = Vec::new();
-            let (bin, print_only) = if command_on_path("agent") {
+            let (bin, print_only): (String, bool) = if command_on_path("agent") {
                 ("agent".into(), false)
             } else if command_on_path("cursor-agent") {
                 ("cursor-agent".into(), false)
@@ -311,8 +311,9 @@ pub fn resume_command(session: &Session) -> Option<ResumeAction> {
                 args.push(session.project.clone());
             }
             if print_only {
-                let cmdline = std::iter::once(bin)
-                    .chain(args.iter().cloned())
+                let cmdline = std::iter::once(bin.as_str())
+                    .chain(args.iter().map(String::as_str))
+                    .map(shell_quote)
                     .collect::<Vec<_>>()
                     .join(" ");
                 Some(ResumeAction::Print { cmdline })
@@ -321,6 +322,19 @@ pub fn resume_command(session: &Session) -> Option<ResumeAction> {
             }
         }
         _ => None,
+    }
+}
+
+/// Quote one argument for copy-paste into a POSIX shell.
+fn shell_quote(arg: &str) -> String {
+    let safe = !arg.is_empty()
+        && arg
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_./:@%+=,".contains(&b));
+    if safe {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', "'\\''"))
     }
 }
 
@@ -1862,6 +1876,15 @@ mod tests {
             "sidebar title",
         );
         assert!(ide.is_ide_ui());
+    }
+
+    #[test]
+    fn shell_quote_protects_spaces_and_quotes() {
+        assert_eq!(shell_quote("plain-arg_1.0"), "plain-arg_1.0");
+        assert_eq!(shell_quote("/Users/a b/ws"), "'/Users/a b/ws'");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+        assert_eq!(shell_quote("$HOME"), "'$HOME'");
+        assert_eq!(shell_quote(""), "''");
     }
 
     #[test]

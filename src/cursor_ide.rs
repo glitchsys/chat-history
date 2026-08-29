@@ -183,12 +183,11 @@ fn load_bubble_entries(conn: &Connection, composer_id: &str) -> Vec<Value> {
             if let Some(raw) = kv_blob(conn, &key)
                 && let Ok(mut entry) = serde_json::from_str::<Value>(&raw)
             {
-                if entry.get("type").is_none() {
-                    if let Some(t) = h.get("type") {
-                        entry
-                            .as_object_mut()
-                            .map(|o| o.insert("type".into(), t.clone()));
-                    }
+                if entry.get("type").is_none()
+                    && let Some(t) = h.get("type")
+                    && let Some(obj) = entry.as_object_mut()
+                {
+                    obj.insert("type".into(), t.clone());
                 }
                 entries.push(entry);
             }
@@ -496,20 +495,19 @@ mod tests {
                     "bubbleId:aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee:",
                     "bubbleId:aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee;",
                 ],
-                |row| Ok(row.get::<_, String>(3)?),
+                |row| row.get::<_, String>(3),
             )
             .unwrap()
             .flatten()
             .collect::<Vec<_>>()
             .join(" ");
+        let upper = plan.to_ascii_uppercase();
         assert!(
-            plan.to_ascii_uppercase().contains("SEARCH")
-                || plan.to_ascii_uppercase().contains("INDEX"),
+            upper.contains("SEARCH") && upper.contains("INDEX"),
             "expected index search, got {plan}"
         );
         assert!(
-            !plan.to_ascii_uppercase().contains("SCAN cursorDiskKV")
-                || plan.to_ascii_uppercase().contains("INDEX"),
+            !upper.contains("SCAN CURSORDISKKV"),
             "full table scan: {plan}"
         );
     }

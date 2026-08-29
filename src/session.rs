@@ -2049,7 +2049,9 @@ mod tests {
                 "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
                 "2025-08-25",
                 "cursor",
-                "/tmp",
+                // Must not exist: an existing path that contains the test
+                // cwd (e.g. `/tmp` on macOS) would win the cwd-match rule.
+                "/no/such/old/copy",
                 "",
                 "old copy",
             ),

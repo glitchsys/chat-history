@@ -359,6 +359,7 @@ pub fn print_search_results_json(results: &[SearchResult], query: &str) {
             serde_json::json!({
                 "session_id": r.session.id,
                 "source": r.session.source,
+                "also_ide": r.session.also_ide,
                 "date": r.session.date,
                 "summary": r.session.summary,
                 "project": r.session.project,
@@ -381,6 +382,7 @@ pub fn print_index_results_json(results: &[IndexResult], query: &str) {
             serde_json::json!({
                 "session_id": r.session.id,
                 "source": r.session.source,
+                "also_ide": r.session.also_ide,
                 "date": r.session.date,
                 "summary": r.session.summary,
                 "project": r.session.project,

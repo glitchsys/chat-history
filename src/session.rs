@@ -1812,7 +1812,10 @@ mod tests {
         let (bin, args) = resume_exec_args(&missing);
         assert!(bin == "agent" || bin == "cursor-agent");
         assert!(args.iter().any(|a| a == "--resume"));
-        assert!(args.iter().any(|a| a == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
+        assert!(
+            args.iter()
+                .any(|a| a == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        );
         assert!(!args.iter().any(|a| a == "--workspace"));
 
         let dir = tempfile::TempDir::new().unwrap();
@@ -1826,10 +1829,7 @@ mod tests {
             "",
         );
         let (_, args) = resume_exec_args(&present);
-        assert!(
-            args.windows(2)
-                .any(|w| w[0] == "--workspace" && w[1] == ws)
-        );
+        assert!(args.windows(2).any(|w| w[0] == "--workspace" && w[1] == ws));
     }
 
     #[test]
@@ -1869,10 +1869,7 @@ mod tests {
             "",
             "",
         );
-        assert_eq!(
-            resume_working_dir(&present).as_deref(),
-            Some(dir.path())
-        );
+        assert_eq!(resume_working_dir(&present).as_deref(), Some(dir.path()));
     }
 
     #[test]

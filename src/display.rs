@@ -92,7 +92,10 @@ fn dir_label(project: &str) -> String {
     labeled("DIR", &abbreviate_home(project))
 }
 
-fn copies_label(counts: &std::collections::HashMap<(String, String), usize>, s: &Session) -> String {
+fn copies_label(
+    counts: &std::collections::HashMap<(String, String), usize>,
+    s: &Session,
+) -> String {
     let n = counts
         .get(&(s.source.clone(), s.id.to_ascii_lowercase()))
         .copied()
@@ -628,10 +631,7 @@ pub fn export_transcript(messages: &[Message], session: &Session, out_path: Opti
             &session.project
         }
     ));
-    lines.push(format!(
-        "- **Session ID:** {}\n\n---\n",
-        session.id
-    ));
+    lines.push(format!("- **Session ID:** {}\n\n---\n", session.id));
     for msg in messages {
         let role = if msg.role == "user" {
             "You"
@@ -776,8 +776,14 @@ mod tests {
 
     #[test]
     fn abbreviates_home_itself() {
-        assert_eq!(abbreviate_home_with("/home/alice", Some("/home/alice")), "~");
-        assert_eq!(abbreviate_home_with("/home/alice/", Some("/home/alice")), "~");
+        assert_eq!(
+            abbreviate_home_with("/home/alice", Some("/home/alice")),
+            "~"
+        );
+        assert_eq!(
+            abbreviate_home_with("/home/alice/", Some("/home/alice")),
+            "~"
+        );
     }
 
     #[test]

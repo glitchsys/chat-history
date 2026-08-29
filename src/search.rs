@@ -443,10 +443,7 @@ pub fn scored_search(
     // Quality gate with fallback (matches Python behavior)
     let quality: Vec<(Session, Message)> = capped
         .iter()
-        .filter(|(_, m)| {
-            m.final_score >= 0.5
-                && (m.content.len() >= 40 || m.uuid == "index-title")
-        })
+        .filter(|(_, m)| m.final_score >= 0.5 && (m.content.len() >= 40 || m.uuid == "index-title"))
         .cloned()
         .collect();
     let mut final_results = if quality.is_empty() { capped } else { quality };

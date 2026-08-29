@@ -146,12 +146,11 @@ fn sort_messages_stable(messages: &mut [Message]) {
 
 fn load_bubbles_range(conn: &Connection, composer_id: &str) -> Vec<Value> {
     let (lower, upper) = bubble_key_bounds(composer_id);
-    let mut stmt = match conn.prepare_cached(
-        "SELECT value FROM cursorDiskKV WHERE key >= ?1 AND key < ?2",
-    ) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
+    let mut stmt =
+        match conn.prepare_cached("SELECT value FROM cursorDiskKV WHERE key >= ?1 AND key < ?2") {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
     let rows = stmt.query_map(rusqlite::params![lower, upper], |row| {
         Ok(blob_text(row.get_ref(0)?))
     });
@@ -368,7 +367,11 @@ fn load_cursor_ide_sessions_from(db: &Path) -> Vec<Session> {
         if first.is_empty() && nmsg > 0 {
             first = first_user_text(&conn, &id);
         }
-        let ts = if updated_ms > 0 { updated_ms } else { created_ms };
+        let ts = if updated_ms > 0 {
+            updated_ms
+        } else {
+            created_ms
+        };
         let (iso, date) = ms_iso_date(ts);
         sessions.push(Session {
             source: "cursor-ide".into(),
@@ -483,12 +486,18 @@ mod tests {
         let (_tmp, db) = fixture_db();
         let conn = Connection::open(&db).unwrap();
         let mut stmt = conn
-            .prepare("EXPLAIN QUERY PLAN SELECT value FROM cursorDiskKV WHERE key >= ?1 AND key < ?2")
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT value FROM cursorDiskKV WHERE key >= ?1 AND key < ?2",
+            )
             .unwrap();
         let plan: String = stmt
-            .query_map(["bubbleId:aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee:", "bubbleId:aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee;"], |row| {
-                Ok(row.get::<_, String>(3)?)
-            })
+            .query_map(
+                [
+                    "bubbleId:aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee:",
+                    "bubbleId:aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee;",
+                ],
+                |row| Ok(row.get::<_, String>(3)?),
+            )
             .unwrap()
             .flatten()
             .collect::<Vec<_>>()

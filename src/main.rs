@@ -1,7 +1,7 @@
 use chat_history::dates::parse_human_date;
 use chat_history::session::{
-    self, ResumeAction, SessionLookup, filter_sessions, load_sessions, lookup_session, parse_session,
-    session_copies,
+    self, ResumeAction, SessionLookup, filter_sessions, load_sessions, lookup_session,
+    parse_session, session_copies,
 };
 use chat_history::skill_install::{ensure_skills, install_skill};
 use chat_history::{display, inspect, scoring, search};
@@ -401,10 +401,7 @@ fn main() {
             let action = match session::resume_command(session) {
                 Some(a) => a,
                 None => {
-                    eprintln!(
-                        "Resume is not supported for {} sessions.",
-                        session.source
-                    );
+                    eprintln!("Resume is not supported for {} sessions.", session.source);
                     std::process::exit(1);
                 }
             };

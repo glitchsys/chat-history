@@ -306,7 +306,7 @@ pub fn resume_command(session: &Session) -> Option<ResumeAction> {
             };
             args.push("--resume".into());
             args.push(session.id.clone());
-            if !session.project.is_empty() && Path::new(&session.project).is_dir() {
+            if existing_absolute_dir(&session.project).is_some() {
                 args.push("--workspace".into());
                 args.push(session.project.clone());
             }
@@ -326,11 +326,19 @@ pub fn resume_command(session: &Session) -> Option<ResumeAction> {
 
 /// Directory the resumed tool should start in (the session's spawn cwd).
 pub fn resume_working_dir(session: &Session) -> Option<PathBuf> {
-    if session.project.is_empty() {
+    existing_absolute_dir(&session.project)
+}
+
+/// `project` as an existing, absolute directory. Cursor slugs that could not
+/// be decoded are kept verbatim (relative) for display; they must never be
+/// used as a cwd or `--workspace`, or a same-named subdirectory of the
+/// current directory would be picked up silently.
+fn existing_absolute_dir(project: &str) -> Option<PathBuf> {
+    if project.is_empty() {
         return None;
     }
-    let dir = PathBuf::from(&session.project);
-    dir.is_dir().then_some(dir)
+    let dir = PathBuf::from(project);
+    (dir.is_absolute() && dir.is_dir()).then_some(dir)
 }
 
 fn command_on_path(name: &str) -> bool {
@@ -1676,7 +1684,7 @@ pub fn copy_count(sessions: &[Session], session: &Session) -> usize {
 }
 
 fn project_matches_cwd(cwd: &Path, project: &str) -> bool {
-    if project.is_empty() {
+    if project.is_empty() || !Path::new(project).is_absolute() {
         return false;
     }
     let cwd = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
@@ -1854,6 +1862,22 @@ mod tests {
             "sidebar title",
         );
         assert!(ide.is_ide_ui());
+    }
+
+    #[test]
+    fn relative_project_is_never_a_workspace() {
+        // `src` exists relative to the package root, where cargo runs tests.
+        // An undecoded Cursor slug looks exactly like this.
+        let s = make_session("id", "2026-01-01", "cursor", "src", "", "");
+        assert!(resume_working_dir(&s).is_none());
+        let mentions_workspace = match resume_command(&s).expect("cursor resume") {
+            ResumeAction::Exec { args, .. } => args.iter().any(|a| a == "--workspace"),
+            ResumeAction::Print { cmdline } => cmdline.contains("--workspace"),
+        };
+        assert!(!mentions_workspace);
+        let cwd = std::env::current_dir().unwrap();
+        assert!(!project_matches_cwd(&cwd.join("src"), "src"));
+        assert!(project_matches_cwd(&cwd, cwd.to_str().unwrap()));
     }
 
     #[test]

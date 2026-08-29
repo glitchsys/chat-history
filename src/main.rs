@@ -12,9 +12,10 @@ use clap::{Parser, Subcommand};
     name = "chat-history",
     about = "Search Claude Code + Cursor + Codex conversation history",
     long_about = "Search Claude Code + Cursor + Codex conversation history.\n\n\
-        With no command, lists sessions newest first. Claude, Codex, and\n\
-        cursor-agent rows show a short ID for inspect/view/export/resume/find.\n\
-        cursor-ide rows hide that ID and cannot be resumed from the CLI.",
+        With no command, lists sessions newest first; every row shows a short\n\
+        session ID usable with inspect/view/export/find. resume works for\n\
+        claude, codex and cursor-agent rows; cursor-ide rows print how to\n\
+        open the chat in the Cursor sidebar instead.",
     version,
     after_help = "EXAMPLES:\n  \
         chat-history                                  list sessions, newest first\n  \

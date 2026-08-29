@@ -123,13 +123,10 @@ fn print_title_line(title: &str) {
     println!("        {}{}{}", c!("bold"), title, c!("reset"));
 }
 
-/// Dim 8-char session-id chip. Claude/Codex/Agent-CLI prefixes resolve via
-/// inspect/view/export/resume/find. Rows tagged `cursor-ide` omit the prefix
-/// (not shown in the Cursor sidebar). `list -v` still prints the full id.
+/// Dim 8-char session-id chip. Every row shows it: the prefix resolves via
+/// inspect/view/export/find for all sources, and via resume for everything
+/// except `cursor-ide` rows (those print a sidebar hint instead).
 fn id_chip(session: &Session) -> String {
-    if session.is_ide_ui() {
-        return format!("{}--------{}", c!("dim"), c!("reset"));
-    }
     let short: String = session.id.chars().take(8).collect();
     format!("{}{:8}{}", c!("dim"), short, c!("reset"))
 }
@@ -730,7 +727,7 @@ mod tests {
     }
 
     #[test]
-    fn id_chip_hides_ide_composer_prefix() {
+    fn id_chip_shows_prefix_for_ide_rows_too() {
         let ide = Session {
             source: "cursor-ide".into(),
             id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
@@ -751,13 +748,12 @@ mod tests {
             id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
             ..ide.clone()
         };
-        assert!(super::id_chip(&ide).contains("--------"));
-        assert!(!super::id_chip(&ide).contains("aaaaaaaa"));
+        assert!(super::id_chip(&ide).contains("aaaaaaaa"));
         assert!(super::id_chip(&agent).contains("aaaaaaaa"));
         agent.also_ide = true;
         assert!(super::src_tag("cursor", true).contains("cursor-ide"));
-        assert!(super::id_chip(&agent).contains("--------"));
-        assert!(!super::id_chip(&agent).contains("aaaaaaaa"));
+        assert!(super::id_chip(&agent).contains("aaaaaaaa"));
+        assert!(!super::id_chip(&agent).contains("--------"));
     }
 
     #[test]

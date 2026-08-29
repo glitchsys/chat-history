@@ -113,12 +113,12 @@ All JSON output uses a `{ "query", "count", "results" }` envelope. Deep-search r
 
 Scopes: `all` (default), `errors`, `similar`, `tools`, `files`. Use `--timeframe today|week|month|Nd` and `--limit N` (default 15) to constrain results.
 
-Human-readable Claude/Codex/`cursor-agent` results include an 8-char UUID prefix — pass that to `inspect`, `view`, `export`, `resume`, or `find`. Rows tagged `cursor-ide` show `--------` instead; find them in the Cursor sidebar by **title** and `DIR:`. `resume` on those ids prints that hint and does not start the Agent CLI.
+Human-readable results include an 8-char UUID prefix — pass that to `inspect`, `view`, `export`, or `find` for any source, and to `resume` for `claude`, `codex` and `cursor-agent` rows. `resume` on a `cursor-ide` id does not start the Agent CLI; it prints the chat's **title** and `DIR:` so you can open it in the Cursor sidebar.
 
 Example (index search, not `--json`):
 
 ```
-  1.  cursor-ide    2026-07-30 -------- ★ 7.5 DIR: ~/proj INDEX_FIELD: summary
+  1.  cursor-ide    2026-07-30 3f9c1a2e ★ 7.5 DIR: ~/proj INDEX_FIELD: summary
         Restore optimization
   2.  cursor-agent  2026-08-20 2f5bb25d ★ 4.0 DIR: ~/tmp INDEX_FIELD: first_prompt
         Please read over the setup guide…
@@ -130,7 +130,7 @@ Example (index search, not `--json`):
 
 - Display tags: `claude` = Claude Code, `cursor-ide` = Cursor IDE sidebar, `cursor-agent` = Agent CLI / jsonl-only, `codex` = Codex
 - Cursor IDE **Agent mode** writes SQLite **and** a jsonl with the same composer id. Search lists that pair **once** as `cursor-ide`. `--source cursor` / `cursor-agent` is the jsonl store; `--source cursor-ide` is SQLite.
-- Header line: source, date, short id (or `--------` for `cursor-ide`), score, `DIR:` spawn directory (`$HOME` shown as `~`), and (index search) `INDEX_FIELD:`
+- Header line: source, date, short id, score, `DIR:` spawn directory (`$HOME` shown as `~`), and (index search) `INDEX_FIELD:`
 - Title / match text is on the following indented line
 - `★ N.N` = relevance (higher is better)
 - `INDEX_FIELD:` is `summary`, `first_prompt`, or `branch`

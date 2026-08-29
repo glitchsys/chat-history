@@ -69,7 +69,7 @@ chat-history inspect <partial-uuid>
 chat-history view --last --plain
 chat-history view <id> --tools
 chat-history export <id> -o session.md
-chat-history resume <id>                  # Claude / Agent CLI / Codex — not cursor-ide
+chat-history resume <id>                  # Claude / Codex / Cursor Agent CLI chats — IDE chats print a hint
 chat-history find <id>                    # absolute path for further tooling
 
 # Shell completions (bash, zsh, fish, elvish, powershell)
@@ -113,7 +113,7 @@ All JSON output uses a `{ "query", "count", "results" }` envelope. Deep-search r
 
 Scopes: `all` (default), `errors`, `similar`, `tools`, `files`. Use `--timeframe today|week|month|Nd` and `--limit N` (default 15) to constrain results.
 
-Human-readable results include an 8-char UUID prefix — pass that to `inspect`, `view`, `export`, or `find` for any source, and to `resume` for `claude`, `codex` and `cursor-agent` rows. `resume` on a `cursor-ide` id does not start the Agent CLI; it prints the chat's **title** and `DIR:` so you can open it in the Cursor sidebar.
+Human-readable results include an 8-char UUID prefix — pass that to `inspect`, `view`, `export`, or `find` for any source, and to `resume` for `claude`, `codex` and Cursor Agent CLI chats (ids that have a store under `~/.cursor/chats`; the CLI is launched in that chat's own workspace). Any other Cursor row — `cursor-ide`, or an Agent transcript whose CLI store is gone — prints the chat's **title** and `DIR:` so you can open it in the Cursor sidebar: the Agent CLI cannot load IDE chats and would start a blank chat that reuses the id.
 
 Example (index search, not `--json`):
 

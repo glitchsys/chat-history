@@ -2442,3 +2442,86 @@ fn cursor_ide_search_json_reports_source_and_also_ide() {
     assert_eq!(first["also_ide"], false);
     assert_eq!(first["session_id"], "abcd1234-0000-4000-8000-000000000001");
 }
+
+// ---------------------------------------------------------------------------
+// Cursor Agent transcripts: resume only through the CLI's own chat store
+// ---------------------------------------------------------------------------
+
+fn setup_cursor_agent_jsonl(tmp: &TempDir, slug: &str, id: &str) {
+    let dir = tmp
+        .path()
+        .join(".cursor")
+        .join("projects")
+        .join(slug)
+        .join("agent-transcripts")
+        .join(id);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join(format!("{id}.jsonl")),
+        r#"{"role":"user","message":{"content":[{"type":"text","text":"probe question about caching"}]}}"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn cursor_transcript_without_cli_store_prints_sidebar_hint() {
+    let (mut cmd, tmp) = isolated_cmd();
+    let id = "dddd1111-2222-4333-8444-555555555555";
+    setup_cursor_agent_jsonl(&tmp, "Users-test-myapp", id);
+    cmd.env("NO_COLOR", "1")
+        .args(["resume", "dddd1111"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("chat store"))
+        .stdout(predicate::str::contains("Cursor IDE UI"))
+        .stdout(predicate::str::contains(id));
+}
+
+#[cfg(unix)]
+#[test]
+fn cursor_transcript_with_cli_store_resumes_in_its_workspace() {
+    use std::os::unix::fs::PermissionsExt;
+    let (mut cmd, tmp) = isolated_cmd();
+    let id = "dddd2222-2222-4333-8444-555555555555";
+    setup_cursor_agent_jsonl(&tmp, "Users-test-myapp", id);
+    let ws = tmp.path().join("ws");
+    fs::create_dir_all(&ws).unwrap();
+    let store = tmp
+        .path()
+        .join(".cursor")
+        .join("chats")
+        .join("0123abcd")
+        .join(id);
+    fs::create_dir_all(&store).unwrap();
+    fs::write(
+        store.join("meta.json"),
+        format!(
+            r#"{{"schemaVersion":1,"cwd":{:?},"updatedAtMs":1}}"#,
+            ws.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    // A shim `agent` that only echoes how it was invoked.
+    let bin = tmp.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let shim = bin.join("agent");
+    fs::write(
+        &shim,
+        "#!/bin/sh\necho \"SHIM agent $*\"\necho \"SHIM cwd $(pwd -P)\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    cmd.env("NO_COLOR", "1")
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .args(["resume", "dddd2222"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "SHIM agent --resume {id} --workspace {}",
+            ws.display()
+        )))
+        .stdout(predicate::str::contains(format!(
+            "SHIM cwd {}",
+            ws.canonicalize().unwrap().display()
+        )));
+}

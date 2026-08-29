@@ -293,6 +293,9 @@ pub fn resume_command(session: &Session) -> Option<ResumeAction> {
             args: vec!["--resume".into(), session.id.clone()],
         }),
         "cursor" => {
+            // Only chats the Agent CLI itself stored can be resumed, and only
+            // from their own workspace; anything else would start a blank chat.
+            let cwd = cursor_cli_chat_cwd(&session.id)?;
             let mut args = Vec::new();
             let (bin, print_only): (String, bool) = if command_on_path("agent") {
                 ("agent".into(), false)
@@ -306,10 +309,8 @@ pub fn resume_command(session: &Session) -> Option<ResumeAction> {
             };
             args.push("--resume".into());
             args.push(session.id.clone());
-            if existing_absolute_dir(&session.project).is_some() {
-                args.push("--workspace".into());
-                args.push(session.project.clone());
-            }
+            args.push("--workspace".into());
+            args.push(cwd.to_string_lossy().into_owned());
             if print_only {
                 let cmdline = std::iter::once(bin.as_str())
                     .chain(args.iter().map(String::as_str))
@@ -340,7 +341,50 @@ fn shell_quote(arg: &str) -> String {
 
 /// Directory the resumed tool should start in (the session's spawn cwd).
 pub fn resume_working_dir(session: &Session) -> Option<PathBuf> {
+    if session.source == "cursor" {
+        return cursor_cli_chat_cwd(&session.id);
+    }
     existing_absolute_dir(&session.project)
+}
+
+/// Workspace of the Cursor Agent CLI chat with this id, if the CLI has a
+/// store for it. The CLI keeps its sessions under
+/// `~/.cursor/chats/<hash of cwd>/<chat id>/{store.db,meta.json}` and looks a
+/// chat up by (workspace, id): resuming from another `--workspace` silently
+/// starts a blank chat that reuses the id. IDE sidebar chats also write
+/// `agent-transcripts` but never have such a store, so they get the sidebar
+/// hint instead. Several stores for one id (different workspaces) resolve to
+/// the most recently updated one whose workspace still exists.
+pub fn cursor_cli_chat_cwd(chat_id: &str) -> Option<PathBuf> {
+    let chats = user_home()?.join(".cursor").join("chats");
+    cursor_cli_chat_cwd_in(&chats, chat_id)
+}
+
+fn cursor_cli_chat_cwd_in(chats_dir: &Path, chat_id: &str) -> Option<PathBuf> {
+    let mut best: Option<(i64, PathBuf)> = None;
+    for entry in fs::read_dir(chats_dir).ok()?.flatten() {
+        let meta_path = entry.path().join(chat_id).join("meta.json");
+        let Ok(raw) = fs::read_to_string(&meta_path) else {
+            continue;
+        };
+        let Ok(meta) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        let Some(cwd) = meta.get("cwd").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(dir) = existing_absolute_dir(cwd) else {
+            continue;
+        };
+        let updated = meta
+            .get("updatedAtMs")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        if best.as_ref().is_none_or(|(t, _)| updated > *t) {
+            best = Some((updated, dir));
+        }
+    }
+    best.map(|(_, dir)| dir)
 }
 
 /// `project` as an existing, absolute directory. Cursor slugs that could not
@@ -1814,16 +1858,10 @@ mod tests {
         );
     }
 
-    fn resume_exec_args(session: &Session) -> (String, Vec<String>) {
-        match resume_command(session).expect("resume") {
-            ResumeAction::Exec { bin, args } => (bin, args),
-            ResumeAction::Print { cmdline } => panic!("expected exec, got print {cmdline}"),
-        }
-    }
-
     #[test]
-    fn resume_command_cursor_uses_resume_flag() {
-        let missing = make_session(
+    fn resume_command_cursor_needs_a_cli_chat_store() {
+        // No ~/.cursor/chats store for this id: nothing to resume.
+        let s = make_session(
             "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "2026-08-26",
             "cursor",
@@ -1831,27 +1869,37 @@ mod tests {
             "",
             "",
         );
-        let (bin, args) = resume_exec_args(&missing);
-        assert!(bin == "agent" || bin == "cursor-agent");
-        assert!(args.iter().any(|a| a == "--resume"));
-        assert!(
-            args.iter()
-                .any(|a| a == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
-        );
-        assert!(!args.iter().any(|a| a == "--workspace"));
+        assert!(resume_command(&s).is_none());
+        assert!(resume_working_dir(&s).is_none());
+    }
 
-        let dir = tempfile::TempDir::new().unwrap();
-        let ws = dir.path().to_string_lossy().into_owned();
-        let present = make_session(
-            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-            "2026-08-26",
-            "cursor",
-            &ws,
-            "",
-            "",
+    #[test]
+    fn cursor_cli_chat_cwd_picks_newest_existing_workspace() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let chats = tmp.path().join("chats");
+        let ws_old = tmp.path().join("ws-old");
+        let ws_new = tmp.path().join("ws-new");
+        fs::create_dir_all(&ws_old).unwrap();
+        fs::create_dir_all(&ws_new).unwrap();
+        let id = "cc9ae34e-117f-435c-9a83-f8958c7b09e1";
+        let write = |hash: &str, cwd: &str, updated: i64| {
+            let dir = chats.join(hash).join(id);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("meta.json"),
+                format!(r#"{{"schemaVersion":1,"cwd":{cwd:?},"updatedAtMs":{updated}}}"#),
+            )
+            .unwrap();
+        };
+        write("aaaa", ws_old.to_str().unwrap(), 1);
+        write("bbbb", ws_new.to_str().unwrap(), 2);
+        write("cccc", "/no/such/workspace", 3); // newest, but the workspace is gone
+        assert_eq!(cursor_cli_chat_cwd_in(&chats, id), Some(ws_new));
+        assert_eq!(cursor_cli_chat_cwd_in(&chats, "other-id"), None);
+        assert_eq!(
+            cursor_cli_chat_cwd_in(&tmp.path().join("missing"), id),
+            None
         );
-        let (_, args) = resume_exec_args(&present);
-        assert!(args.windows(2).any(|w| w[0] == "--workspace" && w[1] == ws));
     }
 
     #[test]
@@ -1891,13 +1939,8 @@ mod tests {
     fn relative_project_is_never_a_workspace() {
         // `src` exists relative to the package root, where cargo runs tests.
         // An undecoded Cursor slug looks exactly like this.
-        let s = make_session("id", "2026-01-01", "cursor", "src", "", "");
+        let s = make_session("id", "2026-01-01", "codex", "src", "", "");
         assert!(resume_working_dir(&s).is_none());
-        let mentions_workspace = match resume_command(&s).expect("cursor resume") {
-            ResumeAction::Exec { args, .. } => args.iter().any(|a| a == "--workspace"),
-            ResumeAction::Print { cmdline } => cmdline.contains("--workspace"),
-        };
-        assert!(!mentions_workspace);
         let cwd = std::env::current_dir().unwrap();
         assert!(!project_matches_cwd(&cwd.join("src"), "src"));
         assert!(project_matches_cwd(&cwd, cwd.to_str().unwrap()));
@@ -1905,13 +1948,13 @@ mod tests {
 
     #[test]
     fn resume_working_dir_requires_existing_folder() {
-        let missing = make_session("id", "2026-01-01", "cursor", "/no/such/ws", "", "");
+        let missing = make_session("id", "2026-01-01", "codex", "/no/such/ws", "", "");
         assert!(resume_working_dir(&missing).is_none());
         let dir = tempfile::TempDir::new().unwrap();
         let present = make_session(
             "id",
             "2026-01-01",
-            "cursor",
+            "codex",
             dir.path().to_str().unwrap(),
             "",
             "",

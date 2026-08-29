@@ -14,8 +14,9 @@ use clap::{Parser, Subcommand};
     long_about = "Search Claude Code + Cursor + Codex conversation history.\n\n\
         With no command, lists sessions newest first; every row shows a short\n\
         session ID usable with inspect/view/export/find. resume works for\n\
-        claude, codex and cursor-agent rows; cursor-ide rows print how to\n\
-        open the chat in the Cursor sidebar instead.",
+        claude, codex and Cursor Agent CLI chats (ids with a store under\n\
+        ~/.cursor/chats); other Cursor rows print how to open the chat in\n\
+        the Cursor sidebar instead.",
     version,
     after_help = "EXAMPLES:\n  \
         chat-history                                  list sessions, newest first\n  \
@@ -132,7 +133,7 @@ enum Commands {
         #[arg(short = 'o', long)]
         output: Option<String>,
     },
-    /// Resume Claude Code, Cursor Agent CLI, or Codex (not Cursor IDE sidebar chats)
+    /// Resume Claude Code, Codex, or a Cursor Agent CLI chat (IDE chats print how to open them)
     Resume {
         /// Session ID or unique prefix
         session_id: String,
@@ -401,6 +402,14 @@ fn main() {
             }
             let action = match session::resume_command(session) {
                 Some(a) => a,
+                None if session.source == "cursor" => {
+                    eprintln!(
+                        "No Agent CLI chat store for this id under ~/.cursor/chats, so \
+                         `agent --resume` cannot load it (it would start a blank chat)."
+                    );
+                    print!("{}", display::cursor_ide_resume_hint(session));
+                    std::process::exit(1);
+                }
                 None => {
                     eprintln!("Resume is not supported for {} sessions.", session.source);
                     std::process::exit(1);

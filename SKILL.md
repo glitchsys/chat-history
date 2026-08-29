@@ -27,7 +27,7 @@ Search, inspect, and export Claude Code, Cursor, and Codex conversation history.
 
 1. `chat-history --from yesterday --to yesterday` — every row shows a short session ID; `-s` groups by day for multi-day overviews.
    - `--from X` alone means **X through today**. Always pair with `--to` when the user means a specific day.
-   - Short IDs work everywhere a session ID is accepted (`inspect`, `view`, `export`, `find`); `-v` adds full IDs and file paths. `resume` works for `claude` / `codex` / `cursor-agent` rows only — do **not** `resume` a `cursor-ide` row; tell the user the **title** and `DIR:` and to open that folder in Cursor and pick the chat in the sidebar.
+   - Short IDs work everywhere a session ID is accepted (`inspect`, `view`, `export`, `find`); `-v` adds full IDs and file paths. `resume` works for `claude` / `codex` rows and for Cursor Agent CLI chats; `cursor-ide` rows (and Agent transcripts without a CLI store) print the **title** and `DIR:` — tell the user to open that folder in Cursor and pick the chat in the sidebar.
 2. `chat-history inspect <id>` for accomplishments, tools, files touched.
 
 ## Choosing the best hit
@@ -77,6 +77,6 @@ chat-history completions zsh               # shell completions (bash/zsh/fish/el
 ## Interpreting output
 
 - Display tags: `claude` = Claude Code, `cursor-ide` = Cursor IDE sidebar (SQLite; IDE Agent also writes jsonl with the same id — still listed once as `cursor-ide`), `cursor-agent` = Agent CLI / jsonl-only, `codex` = Codex; `★ N.N` = relevance score. `--source cursor` / `cursor-agent` = jsonl store; `--source cursor-ide` = SQLite.
-- Header line has `DIR:` (spawn directory) and, for index search, `INDEX_FIELD:` (`summary` / `first_prompt` / `branch`). Title is on the next line. Pass the short ID to `inspect` / `view` / `export` / `find` for any row, and to `resume` for `claude` / `codex` / `cursor-agent` rows. `cursor-ide` rows are found in the sidebar by title + `DIR:`.
+- Header line has `DIR:` (spawn directory) and, for index search, `INDEX_FIELD:` (`summary` / `first_prompt` / `branch`). Title is on the next line. Pass the short ID to `inspect` / `view` / `export` / `find` for any row, and to `resume` for `claude` / `codex` rows and Cursor Agent CLI chats (`cursor-agent` rows that still have a `~/.cursor/chats` store). Other Cursor rows are found in the sidebar by title + `DIR:`.
 - `COPIES: N` means the same Cursor Agent session id exists in more than one project folder; `inspect`/`resume`/`find` pick one copy (cwd match, else newest) and print the others.
 - Accepted dates: `YYYY-MM-DD`, `today`, `yesterday`, `"3 days ago"`, `"last week"`, `"last month"`.

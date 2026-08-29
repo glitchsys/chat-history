@@ -210,8 +210,8 @@ fn load_bubble_entries(conn: &Connection, composer_id: &str) -> Vec<Value> {
     entries
 }
 
-fn first_user_text(conn: &Connection, composer_id: &str) -> String {
-    if let Some(headers) = composer_header_order(conn, composer_id) {
+fn first_user_text(conn: &Connection, composer_id: &str, headers: Option<&[Value]>) -> String {
+    if let Some(headers) = headers {
         for h in headers {
             if h.get("type").and_then(Value::as_i64) != Some(1) {
                 continue;
@@ -305,12 +305,6 @@ fn bubble_counts(conn: &Connection) -> HashMap<String, u64> {
     counts
 }
 
-fn header_len(conn: &Connection, composer_id: &str) -> u64 {
-    composer_header_order(conn, composer_id)
-        .map(|h| h.len() as u64)
-        .unwrap_or(0)
-}
-
 pub fn load_cursor_ide_sessions() -> Vec<Session> {
     load_cursor_ide_sessions_from(&global_vscdb())
 }
@@ -362,9 +356,13 @@ fn load_cursor_ide_sessions_from(db: &Path) -> Vec<Session> {
         } else {
             name.chars().take(300).collect()
         };
-        let nmsg = header_len(&conn, &id).max(counts.get(&id).copied().unwrap_or(0));
+        // composerData blobs are large (tens of MB across a real DB); read
+        // and parse each one once per listing.
+        let headers = composer_header_order(&conn, &id);
+        let header_len = headers.as_ref().map(|h| h.len() as u64).unwrap_or(0);
+        let nmsg = header_len.max(counts.get(&id).copied().unwrap_or(0));
         if first.is_empty() && nmsg > 0 {
-            first = first_user_text(&conn, &id);
+            first = first_user_text(&conn, &id, headers.as_deref());
         }
         let ts = if updated_ms > 0 {
             updated_ms
